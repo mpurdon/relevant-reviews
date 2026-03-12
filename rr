@@ -1,0 +1,608 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ─── Relevant Reviews (rr) ───────────────────────────────────────────────────
+# Fetches a GitHub PR, uses AI to classify which files contain relevant changes
+# (business logic, infrastructure), and opens them in the Relevant Reviews app.
+# ──────────────────────────────────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ─── Model configuration ──────────────────────────────────────────────────
+# Model ARN can be set via: RR_MODEL env var, or ~/.config/relevant-reviews/config
+CONFIG_FILE="${HOME}/.config/relevant-reviews/config"
+if [[ -z "${RR_MODEL:-}" ]] && [[ -f "$CONFIG_FILE" ]]; then
+  RR_MODEL=$(grep '^model=' "$CONFIG_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+fi
+if [[ -z "${RR_MODEL:-}" ]]; then
+  echo "Error: No model ARN configured." >&2
+  echo "Set RR_MODEL env var or add 'model=<arn>' to $CONFIG_FILE" >&2
+  exit 1
+fi
+
+# ─── Usage ────────────────────────────────────────────────────────────────────
+
+usage() {
+  cat <<EOF
+Usage: rr <pr-url-or-ref> [options]
+
+Arguments:
+  <pr-url-or-ref>    GitHub PR URL or owner/repo#number
+
+Options:
+  --list-only        Only list classified files, don't open the app
+  --manifest-only    Build manifest and print its path, don't open any viewer
+  --vscode           Open diffs in VSCode instead of the Relevant Reviews app
+  --help             Show this help message
+
+Examples:
+  rr https://github.com/org/repo/pull/123
+  rr org/repo#123
+  rr 123                                     # if inside a git repo with a remote
+EOF
+  exit 0
+}
+
+# ─── Parse arguments ──────────────────────────────────────────────────────────
+
+PR_REF=""
+LIST_ONLY=false
+MANIFEST_ONLY=false
+USE_VSCODE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --list-only)      LIST_ONLY=true; shift ;;
+    --manifest-only)  MANIFEST_ONLY=true; shift ;;
+    --vscode)         USE_VSCODE=true; shift ;;
+    --help|-h)        usage ;;
+    *)                PR_REF="$1"; shift ;;
+  esac
+done
+
+if [[ -z "$PR_REF" ]]; then
+  echo "Error: PR reference is required." >&2
+  usage
+fi
+
+# ─── Resolve PR reference ────────────────────────────────────────────────────
+
+# Extract repo and PR number from various formats
+resolve_pr() {
+  local ref="$1"
+
+  # Full URL: https://github.com/owner/repo/pull/123
+  if [[ "$ref" =~ github\.com/([^/]+/[^/]+)/pull/([0-9]+) ]]; then
+    REPO="${BASH_REMATCH[1]}"
+    PR_NUMBER="${BASH_REMATCH[2]}"
+    return
+  fi
+
+  # owner/repo#123
+  if [[ "$ref" =~ ^([^/]+/[^#]+)#([0-9]+)$ ]]; then
+    REPO="${BASH_REMATCH[1]}"
+    PR_NUMBER="${BASH_REMATCH[2]}"
+    return
+  fi
+
+  # Just a number — use current repo context
+  if [[ "$ref" =~ ^[0-9]+$ ]]; then
+    REPO=""
+    PR_NUMBER="$ref"
+    return
+  fi
+
+  echo "Error: Could not parse PR reference: $ref" >&2
+  echo "Expected formats: URL, owner/repo#number, or just a number (inside a repo)" >&2
+  exit 1
+}
+
+resolve_pr "$PR_REF"
+
+# Build gh flags
+GH_REPO_FLAG=""
+if [[ -n "$REPO" ]]; then
+  GH_REPO_FLAG="--repo $REPO"
+fi
+
+# ─── Fetch PR metadata and diff ──────────────────────────────────────────────
+
+echo "Fetching PR #${PR_NUMBER}..."
+
+PR_JSON=$(gh pr view "$PR_NUMBER" $GH_REPO_FLAG --json title,baseRefName,headRefName,url,files)
+PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
+PR_URL=$(echo "$PR_JSON" | jq -r '.url')
+BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName')
+HEAD_REF=$(echo "$PR_JSON" | jq -r '.headRefName')
+
+# Get the actual base and head commit SHAs from the GitHub API
+# This is more reliable than local ref resolution, especially for merged PRs
+if [[ -n "$REPO" ]]; then
+  PR_API_JSON=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '{base_sha: .base.sha, head_sha: .head.sha}')
+else
+  # Determine repo from current git remote
+  DETECTED_REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner')
+  PR_API_JSON=$(gh api "repos/$DETECTED_REPO/pulls/$PR_NUMBER" --jq '{base_sha: .base.sha, head_sha: .head.sha}')
+fi
+PR_BASE_SHA=$(echo "$PR_API_JSON" | jq -r '.base_sha')
+PR_HEAD_SHA=$(echo "$PR_API_JSON" | jq -r '.head_sha')
+
+echo "PR: $PR_TITLE"
+echo "URL: $PR_URL"
+echo "Base: $BASE_REF ($PR_BASE_SHA) -> Head: $HEAD_REF ($PR_HEAD_SHA)"
+
+# Get the list of changed files with their paths
+FILES_JSON=$(echo "$PR_JSON" | jq -r '.files')
+FILE_LIST=$(echo "$FILES_JSON" | jq -r '.[].path')
+FILE_COUNT=$(echo "$FILE_LIST" | wc -l | tr -d ' ')
+
+echo "Changed files: $FILE_COUNT"
+echo ""
+
+if [[ "$FILE_COUNT" -eq 0 ]]; then
+  echo "No changed files found."
+  exit 0
+fi
+
+# Get the actual diff content (but truncate very large diffs for the AI prompt)
+DIFF_CONTENT=$(gh pr diff "$PR_NUMBER" $GH_REPO_FLAG 2>/dev/null || echo "")
+
+# ─── AI Classification ───────────────────────────────────────────────────────
+
+echo "Classifying files with AI..."
+
+# Build the prompt with file list and diff snippets
+CLASSIFY_PROMPT=$(cat <<'PROMPT_EOF'
+You are a code review assistant. Your job is to classify changed files in a pull request as either RELEVANT or NOT_RELEVANT for a business logic / infrastructure review.
+
+RELEVANT files include:
+- Backend business logic (services, repositories, models, entities, DTOs, handlers, controllers, routers, middleware, validators)
+- Infrastructure-as-code (CDK stacks, SST stacks, sst.config, CloudFormation, Terraform, CI/CD workflows in .github/workflows)
+- API route definitions, tRPC routers, REST endpoint handlers
+- Database schemas, migrations, seeds
+- Authentication/authorization logic (policies, auth handlers, middleware)
+- Configuration that affects runtime behavior (environment configs that change logic, feature flags)
+- Shared libraries and utilities used by business logic
+
+NOT_RELEVANT files include:
+- UI components (React components that render JSX/HTML, CSS, Tailwind config, styles, layouts, pages that are purely presentational)
+- Test files (*.test.*, *.spec.*, __tests__/, test/, tests/, pact/)
+- Documentation (*.md, docs/, README)
+- IDE/editor config (.vscode/, .idea/)
+- Package manager files (package.json, pnpm-lock.yaml, yarn.lock, package-lock.json) UNLESS they add new meaningful dependencies
+- Build config / tooling config (tsconfig.json, eslint config, prettier config, vitest config, nx config, postcss config, tailwind config)
+- Type declaration files that only re-export or define UI prop types
+- Static assets (images, fonts, icons, SVGs)
+- Auto-generated files (generated types, OpenAPI specs that are generated)
+
+IMPORTANT EDGE CASES:
+- Next.js API routes (app/api/) ARE relevant (they contain backend logic)
+- Next.js page components and layouts are NOT relevant (they are UI)
+- tRPC router files ARE relevant
+- Hook files that contain business logic (data fetching, state management with business rules) ARE relevant
+- Hook files that are purely UI state (animations, UI toggles) are NOT relevant
+- Shared utility libraries: classify based on whether they contain business logic or UI helpers
+
+Respond with ONLY a valid JSON array. Each element must be an object with:
+- "path": the file path
+- "classification": either "RELEVANT" or "NOT_RELEVANT"
+- "category": one of "Business Logic", "Infrastructure", "Domain Types", or "Other" (for RELEVANT files); use "N/A" for NOT_RELEVANT files
+- "risk_level": one of "critical", "high", "medium", "low" — based on the potential impact of the change:
+  - "critical": security-sensitive changes, auth logic, payment/billing, data deletion, database migrations, IAM/permissions
+  - "high": core business logic changes, API contract changes, infrastructure changes, shared library changes
+  - "medium": standard feature code, service implementations, non-critical handlers
+  - "low": minor refactors, logging, comments, config tweaks, test helpers
+  For NOT_RELEVANT files, use "low".
+- "reason": a brief reason (under 10 words)
+
+Do NOT include any text before or after the JSON array. Just the JSON.
+PROMPT_EOF
+)
+
+# Prepare the file context — include file paths and first ~50 lines of each file's diff
+# to give the AI enough context without overwhelming it
+build_file_context() {
+  echo "Files changed in this PR:"
+  echo ""
+  echo "$FILE_LIST"
+  echo ""
+  echo "=== DIFF CONTENT (for context) ==="
+  echo ""
+  # Truncate diff to ~30000 chars to stay within reasonable prompt size
+  echo "$DIFF_CONTENT" | head -c 30000
+  if [[ ${#DIFF_CONTENT} -gt 30000 ]]; then
+    echo ""
+    echo "... (diff truncated for brevity)"
+  fi
+}
+
+FILE_CONTEXT=$(build_file_context)
+
+FULL_PROMPT="${CLASSIFY_PROMPT}
+
+---
+
+PR Title: ${PR_TITLE}
+
+${FILE_CONTEXT}"
+
+# Call claude CLI for classification
+CLASSIFICATION=$(echo "$FULL_PROMPT" | CLAUDECODE= claude --model "$RR_MODEL" --print 2>/dev/null)
+
+# Extract JSON from the response (in case there's any wrapping text)
+CLASSIFICATION_JSON=$(echo "$CLASSIFICATION" | sed -n '/^\[/,/^\]/p')
+
+if [[ -z "$CLASSIFICATION_JSON" ]]; then
+  # Try to find JSON array anywhere in the output
+  CLASSIFICATION_JSON=$(echo "$CLASSIFICATION" | python3 -c "
+import sys, json, re
+text = sys.stdin.read()
+match = re.search(r'\[.*\]', text, re.DOTALL)
+if match:
+    # Validate it's actual JSON
+    parsed = json.loads(match.group())
+    print(json.dumps(parsed))
+else:
+    sys.exit(1)
+" 2>/dev/null)
+fi
+
+if [[ -z "$CLASSIFICATION_JSON" ]]; then
+  echo "Error: Could not parse AI classification response." >&2
+  echo "Raw response:" >&2
+  echo "$CLASSIFICATION" >&2
+  exit 1
+fi
+
+# ─── Display classification results ──────────────────────────────────────────
+
+RELEVANT_FILES=$(echo "$CLASSIFICATION_JSON" | jq -r '.[] | select(.classification == "RELEVANT") | .path')
+NOT_RELEVANT_FILES=$(echo "$CLASSIFICATION_JSON" | jq -r '.[] | select(.classification == "NOT_RELEVANT") | .path')
+RELEVANT_COUNT=$(echo "$RELEVANT_FILES" | grep -c '.' || echo "0")
+NOT_RELEVANT_COUNT=$(echo "$NOT_RELEVANT_FILES" | grep -c '.' || echo "0")
+
+echo ""
+echo "=== Classification Results ==="
+echo ""
+echo "RELEVANT ($RELEVANT_COUNT files):"
+echo "$CLASSIFICATION_JSON" | jq -r '.[] | select(.classification == "RELEVANT") | "  \(.path) — \(.reason)"'
+echo ""
+echo "NOT RELEVANT ($NOT_RELEVANT_COUNT files):"
+echo "$CLASSIFICATION_JSON" | jq -r '.[] | select(.classification == "NOT_RELEVANT") | "  \(.path) — \(.reason)"'
+echo ""
+
+if [[ "$LIST_ONLY" == true ]]; then
+  exit 0
+fi
+
+if [[ "$RELEVANT_COUNT" -eq 0 ]]; then
+  echo "No relevant files found. Nothing to review."
+  exit 0
+fi
+
+# ─── Resolve local repo for file extraction ──────────────────────────────────
+
+REPO_DIR=""
+
+if git rev-parse --is-inside-work-tree &>/dev/null; then
+  CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null || echo "")
+  if [[ -n "$REPO" ]]; then
+    if echo "$CURRENT_REMOTE" | grep -qi "$REPO"; then
+      REPO_DIR="$(git rev-parse --show-toplevel)"
+    fi
+  else
+    REPO_DIR="$(git rev-parse --show-toplevel)"
+  fi
+fi
+
+if [[ -z "$REPO_DIR" ]]; then
+  TMPDIR_BASE="${TMPDIR:-/tmp}/relevant-reviews"
+  mkdir -p "$TMPDIR_BASE"
+  REPO_SLUG=$(echo "$REPO" | tr '/' '-')
+  REPO_DIR="$TMPDIR_BASE/$REPO_SLUG"
+
+  if [[ -d "$REPO_DIR" ]]; then
+    echo "Using cached clone at $REPO_DIR"
+    git -C "$REPO_DIR" fetch origin "$BASE_REF" "$HEAD_REF" --quiet
+  else
+    echo "Cloning $REPO..."
+    gh repo clone "$REPO" "$REPO_DIR" -- --quiet
+  fi
+fi
+
+# Fetch the commits we need
+echo "Fetching PR commits..."
+git -C "$REPO_DIR" fetch origin "$PR_BASE_SHA" "$PR_HEAD_SHA" --quiet 2>/dev/null || {
+  git -C "$REPO_DIR" fetch origin "$BASE_REF" --quiet 2>/dev/null || true
+  git -C "$REPO_DIR" fetch origin "pull/$PR_NUMBER/head" --quiet 2>/dev/null || true
+}
+
+BASE_SHA="$PR_BASE_SHA"
+HEAD_SHA="$PR_HEAD_SHA"
+
+echo "Diffing $BASE_SHA...$HEAD_SHA"
+echo ""
+
+# ─── AI Highlight Analysis ────────────────────────────────────────────────────
+
+echo "Analyzing critical changes in relevant files..."
+
+# Build a focused prompt with only the relevant files' diffs
+build_highlight_context() {
+  echo "$CLASSIFICATION_JSON" | jq -r '.[] | select(.classification == "RELEVANT") | .path' | while IFS= read -r filepath; do
+    [[ -z "$filepath" ]] && continue
+    # Extract this file's diff from the full diff
+    FILE_DIFF=$(echo "$DIFF_CONTENT" | awk -v file="$filepath" '
+      /^diff --git/ { found = 0 }
+      $0 ~ "^diff --git a/" file " b/" file { found = 1 }
+      found { print }
+    ')
+    if [[ -n "$FILE_DIFF" ]]; then
+      echo "=== FILE: $filepath ==="
+      echo "$FILE_DIFF" | head -c 5000
+      echo ""
+      echo ""
+    fi
+  done
+}
+
+HIGHLIGHT_PROMPT=$(cat <<'HIGHLIGHT_EOF'
+You are a code review assistant. You are given the diffs of files that have been classified as relevant for review. Your job is to identify specific changes within each file that deserve human attention.
+
+Focus on:
+- Security implications (auth checks added/removed, input validation changes, permission changes)
+- Behavior changes that could break existing functionality
+- Removed safety checks or error handling
+- New error paths or failure modes
+- Changed API contracts (parameters, return types, response shapes)
+- Database/data model changes
+- Race conditions or concurrency issues
+- Configuration changes that affect runtime behavior
+- Changes to shared utilities that many consumers depend on
+
+Do NOT flag:
+- Simple renames or formatting changes
+- Adding new fields that have sensible defaults
+- Straightforward additions of new independent functionality
+- Log message changes
+- Comment-only changes
+
+For each highlight, provide:
+- "path": the file path
+- "start_line": the line number in the NEW (head) version of the file where the notable change starts
+- "end_line": the line number in the NEW (head) version where it ends
+- "severity": one of "critical", "warning", "info"
+  - "critical": security risk, data loss risk, auth bypass, breaking API change
+  - "warning": behavior change worth verifying, removed safety check, non-obvious side effect
+  - "info": worth noting but likely fine — refactored logic, changed defaults, added dependency
+- "comment": a concise explanation (under 20 words) of what the reviewer should pay attention to
+
+Respond with ONLY a valid JSON array of these highlight objects. If there are no notable changes, return an empty array [].
+Do NOT include any text before or after the JSON array. Just the JSON.
+HIGHLIGHT_EOF
+)
+
+HIGHLIGHT_CONTEXT=$(build_highlight_context)
+
+FULL_HIGHLIGHT_PROMPT="${HIGHLIGHT_PROMPT}
+
+---
+
+PR Title: ${PR_TITLE}
+
+${HIGHLIGHT_CONTEXT}"
+
+HIGHLIGHTS_RAW=$(echo "$FULL_HIGHLIGHT_PROMPT" | CLAUDECODE= claude --model "$RR_MODEL" --print 2>/dev/null)
+
+# Extract JSON from highlights response
+HIGHLIGHTS_JSON=$(echo "$HIGHLIGHTS_RAW" | sed -n '/^\[/,/^\]/p')
+
+if [[ -z "$HIGHLIGHTS_JSON" ]]; then
+  HIGHLIGHTS_JSON=$(echo "$HIGHLIGHTS_RAW" | python3 -c "
+import sys, json, re
+text = sys.stdin.read()
+match = re.search(r'\[.*\]', text, re.DOTALL)
+if match:
+    parsed = json.loads(match.group())
+    print(json.dumps(parsed))
+else:
+    print('[]')
+" 2>/dev/null || echo "[]")
+fi
+
+if [[ -z "$HIGHLIGHTS_JSON" ]] || [[ "$HIGHLIGHTS_JSON" == "null" ]]; then
+  HIGHLIGHTS_JSON="[]"
+fi
+
+HIGHLIGHT_COUNT=$(echo "$HIGHLIGHTS_JSON" | jq 'length' 2>/dev/null || echo "0")
+echo "Found $HIGHLIGHT_COUNT highlights across relevant files."
+echo ""
+
+# ─── Build manifest with file contents ───────────────────────────────────────
+
+echo "Building review manifest..."
+
+# Get per-file unified diffs
+FULL_DIFF=$(git -C "$REPO_DIR" diff "$BASE_SHA"..."$HEAD_SHA" -- 2>/dev/null || echo "")
+
+# Build the manifest JSON using Python for robustness
+MANIFEST_PATH="${TMPDIR:-/tmp}/rr-manifest-$(date +%s)-$$.json"
+
+python3 -c "
+import json, subprocess, sys, os
+
+repo_dir = sys.argv[1]
+base_sha = sys.argv[2]
+head_sha = sys.argv[3]
+classification_json = json.loads(sys.argv[4])
+pr_title = sys.argv[5]
+pr_url = sys.argv[6]
+pr_number = int(sys.argv[7])
+base_ref = sys.argv[8]
+head_ref = sys.argv[9]
+manifest_path = sys.argv[10]
+highlights_json = json.loads(sys.argv[11]) if len(sys.argv) > 11 else []
+
+# Index highlights by file path
+highlights_by_path = {}
+for h in highlights_json:
+    p = h.get('path', '')
+    if p not in highlights_by_path:
+        highlights_by_path[p] = []
+    highlights_by_path[p].append({
+        'start_line': h.get('start_line', 0),
+        'end_line': h.get('end_line', 0),
+        'severity': h.get('severity', 'info'),
+        'comment': h.get('comment', ''),
+    })
+
+relevant = [f for f in classification_json if f['classification'] == 'RELEVANT']
+
+files = []
+for f in relevant:
+    path = f['path']
+
+    # Get base content
+    try:
+        base_content = subprocess.check_output(
+            ['git', '-C', repo_dir, 'show', f'{base_sha}:{path}'],
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8', errors='replace')
+    except subprocess.CalledProcessError:
+        base_content = ''
+
+    # Get head content
+    try:
+        head_content = subprocess.check_output(
+            ['git', '-C', repo_dir, 'show', f'{head_sha}:{path}'],
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8', errors='replace')
+    except subprocess.CalledProcessError:
+        head_content = ''
+
+    # Determine diff type
+    if not base_content and head_content:
+        diff_type = 'added'
+    elif base_content and not head_content:
+        diff_type = 'removed'
+    else:
+        diff_type = 'modified'
+
+    # Get unified diff for this file
+    try:
+        unified_diff = subprocess.check_output(
+            ['git', '-C', repo_dir, 'diff', f'{base_sha}...{head_sha}', '--', path],
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8', errors='replace')
+        # Strip the diff header (everything before the first @@)
+        lines = unified_diff.split('\n')
+        start = 0
+        for i, line in enumerate(lines):
+            if line.startswith('@@'):
+                start = i
+                break
+        unified_diff = '\n'.join(lines[start:])
+    except subprocess.CalledProcessError:
+        unified_diff = ''
+
+    files.append({
+        'path': path,
+        'classification': f['classification'],
+        'reason': f.get('reason', ''),
+        'category': f.get('category', 'Other'),
+        'risk_level': f.get('risk_level', 'medium'),
+        'diff_type': diff_type,
+        'base_content': base_content,
+        'head_content': head_content,
+        'unified_diff': unified_diff,
+        'highlights': highlights_by_path.get(path, []),
+    })
+
+manifest = {
+    'pr_title': pr_title,
+    'pr_url': pr_url,
+    'pr_number': pr_number,
+    'base_ref': base_ref,
+    'head_ref': head_ref,
+    'base_sha': base_sha,
+    'head_sha': head_sha,
+    'files': files,
+}
+
+with open(manifest_path, 'w') as out:
+    json.dump(manifest, out)
+
+print(f'Manifest written: {len(files)} files')
+" "$REPO_DIR" "$BASE_SHA" "$HEAD_SHA" "$CLASSIFICATION_JSON" "$PR_TITLE" "$PR_URL" "$PR_NUMBER" "$BASE_REF" "$HEAD_REF" "$MANIFEST_PATH" "$HIGHLIGHTS_JSON"
+
+if [[ "$MANIFEST_ONLY" == true ]]; then
+  echo "$MANIFEST_PATH"
+  exit 0
+fi
+
+# ─── Open in viewer ──────────────────────────────────────────────────────────
+
+if [[ "$USE_VSCODE" == true ]]; then
+  echo "Opening diffs in VSCode..."
+
+  DIFF_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/rr-diff-XXXXXX")
+  BASE_DIR="$DIFF_TMPDIR/base"
+  HEAD_DIR="$DIFF_TMPDIR/head"
+  mkdir -p "$BASE_DIR" "$HEAD_DIR"
+
+  FILELIST_TMP="$DIFF_TMPDIR/filelist.txt"
+  echo "$RELEVANT_FILES" > "$FILELIST_TMP"
+
+  while IFS= read -r filepath; do
+    [[ -z "$filepath" ]] && continue
+    mkdir -p "$BASE_DIR/$(dirname "$filepath")"
+    mkdir -p "$HEAD_DIR/$(dirname "$filepath")"
+    git -C "$REPO_DIR" show "$BASE_SHA:$filepath" > "$BASE_DIR/$filepath" 2>/dev/null || touch "$BASE_DIR/$filepath"
+    git -C "$REPO_DIR" show "$HEAD_SHA:$filepath" > "$HEAD_DIR/$filepath" 2>/dev/null || touch "$HEAD_DIR/$filepath"
+  done < "$FILELIST_TMP"
+
+  OPENED=0
+  while IFS= read -r filepath; do
+    [[ -z "$filepath" ]] && continue
+    code --reuse-window --diff "$BASE_DIR/$filepath" "$HEAD_DIR/$filepath" </dev/null 2>/dev/null
+    OPENED=$((OPENED + 1))
+    sleep 1
+  done < "$FILELIST_TMP"
+
+  echo "Done! Opened ${OPENED} diff tabs in VSCode."
+else
+  # Launch the Relevant Reviews desktop app
+  APP_BINARY="$SCRIPT_DIR/app/src-tauri/target/release/relevant-reviews"
+  APP_BUNDLE="$SCRIPT_DIR/app/src-tauri/target/release/bundle/macos/Relevant Reviews.app"
+
+  if [[ -d "$APP_BUNDLE" ]]; then
+    echo "Opening Relevant Reviews app..."
+    open "$APP_BUNDLE" --args "$MANIFEST_PATH"
+  elif [[ -x "$APP_BINARY" ]]; then
+    echo "Opening Relevant Reviews app..."
+    "$APP_BINARY" "$MANIFEST_PATH" &
+  else
+    echo "Error: Relevant Reviews app not found." >&2
+    echo "Build it with: cd $SCRIPT_DIR/app && cargo tauri build" >&2
+    echo ""
+    echo "Falling back to VSCode..."
+    USE_VSCODE=true
+
+    DIFF_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/rr-diff-XXXXXX")
+    BASE_DIR="$DIFF_TMPDIR/base"
+    HEAD_DIR="$DIFF_TMPDIR/head"
+    mkdir -p "$BASE_DIR" "$HEAD_DIR"
+
+    echo "$RELEVANT_FILES" | while IFS= read -r filepath; do
+      [[ -z "$filepath" ]] && continue
+      mkdir -p "$BASE_DIR/$(dirname "$filepath")" "$HEAD_DIR/$(dirname "$filepath")"
+      git -C "$REPO_DIR" show "$BASE_SHA:$filepath" > "$BASE_DIR/$filepath" 2>/dev/null || touch "$BASE_DIR/$filepath"
+      git -C "$REPO_DIR" show "$HEAD_SHA:$filepath" > "$HEAD_DIR/$filepath" 2>/dev/null || touch "$HEAD_DIR/$filepath"
+      code --reuse-window --diff "$BASE_DIR/$filepath" "$HEAD_DIR/$filepath" </dev/null 2>/dev/null
+      sleep 1
+    done
+  fi
+fi
+
+echo ""
+echo "Manifest: $MANIFEST_PATH"

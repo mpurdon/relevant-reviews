@@ -1,0 +1,26 @@
+# Dependencies
+app/node_modules/
+
+# Build artifacts
+app/dist/
+app/src-tauri/target/
+app/src-tauri/gen/
+
+# Lock files (Cargo.lock is checked in for binary crates)
+# app/src-tauri/Cargo.lock  — intentionally tracked
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code local settings (contain machine-specific paths)
+.claude/
+
+# Temporary files
+*.tmp

@@ -1,0 +1,57 @@
+import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+
+interface PrOpenerProps {
+  onManifestReady: (path: string) => void;
+}
+
+export function PrOpener({ onManifestReady }: PrOpenerProps) {
+  const [prRef, setPrRef] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!prRef.trim()) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const manifestPath = await invoke<string>("fetch_pr", {
+        prRef: prRef.trim(),
+      });
+      onManifestReady(manifestPath);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="pr-opener">
+      <div className="pr-opener-divider">
+        <span>or open a PR directly</span>
+      </div>
+      <form className="pr-opener-form" onSubmit={handleSubmit}>
+        <input
+          type="text"
+          className="pr-opener-input"
+          value={prRef}
+          onChange={(e) => setPrRef(e.target.value)}
+          placeholder="PR URL or owner/repo#123 or just #123"
+          disabled={loading}
+        />
+        <button
+          type="submit"
+          className="pr-opener-button"
+          disabled={loading || !prRef.trim()}
+        >
+          {loading ? "Fetching..." : "Open PR"}
+        </button>
+      </form>
+      {error && <div className="pr-opener-error">{error}</div>}
+    </div>
+  );
+}
