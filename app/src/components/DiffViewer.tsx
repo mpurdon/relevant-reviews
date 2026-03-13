@@ -232,13 +232,18 @@ function buildFullFileLines(content: string, type: "add" | "remove", lang: strin
   }));
 }
 
+const LINE_TINT_THRESHOLD = 50;
+
 function getHighlightForLine(
   lineNum: number | null,
   highlights: Highlight[]
 ): Highlight | undefined {
   if (lineNum === null || highlights.length === 0) return undefined;
   return highlights.find(
-    (h) => lineNum >= h.start_line && lineNum <= h.end_line
+    (h) =>
+      lineNum >= h.start_line &&
+      lineNum <= h.end_line &&
+      h.end_line - h.start_line + 1 <= LINE_TINT_THRESHOLD
   );
 }
 
@@ -270,6 +275,12 @@ function HighlightMarker({ highlight }: { highlight: Highlight }) {
 function UnifiedView({ lines, highlights }: { lines: DiffLine[]; highlights: Highlight[] }) {
   return (
     <table className="diff-table unified">
+      <colgroup>
+        <col style={{ width: 50 }} />
+        <col style={{ width: 50 }} />
+        <col style={{ width: 20 }} />
+        <col />
+      </colgroup>
       <tbody>
         {lines.map((line, idx) => {
           const lineNum = line.newLineNum ?? line.oldLineNum;
@@ -307,6 +318,12 @@ function UnifiedView({ lines, highlights }: { lines: DiffLine[]; highlights: Hig
 function SplitView({ splitLines, highlights }: { splitLines: SplitLine[]; highlights: Highlight[] }) {
   return (
     <table className="diff-table split">
+      <colgroup>
+        <col style={{ width: 50 }} />
+        <col />
+        <col style={{ width: 50 }} />
+        <col />
+      </colgroup>
       <tbody>
         {splitLines.map((pair, idx) => {
           const rightLineNum = pair.right?.newLineNum ?? pair.right?.oldLineNum;

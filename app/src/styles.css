@@ -195,10 +195,38 @@ body {
   color: var(--text-primary);
 }
 
+.new-review-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.new-review-button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.header-separator {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
 .github-link {
   color: var(--accent);
   text-decoration: none;
   font-size: 13px;
+  cursor: pointer;
 }
 
 .github-link:hover {

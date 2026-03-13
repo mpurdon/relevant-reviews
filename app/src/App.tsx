@@ -113,6 +113,11 @@ function App() {
         onViewModeChange={setViewMode}
         viewedCount={viewedFiles.size}
         onSettingsClick={() => setSettingsOpen(true)}
+        onNewReview={() => {
+          setManifest(null);
+          setSelectedFile(null);
+          setViewedFiles(new Set());
+        }}
       />
       <SettingsModal
         open={settingsOpen}
