@@ -381,6 +381,7 @@ export function DiffViewer({ file, viewMode }: DiffViewerProps) {
   const highlights = file.highlights ?? [];
   const isCritical =
     file.risk_level === "critical" || file.risk_level === "high";
+  const isFullFile = file.diff_type === "added" || file.diff_type === "removed";
 
   return (
     <div className={`diff-viewer ${isCritical ? "diff-viewer-critical" : ""}`}>
@@ -411,7 +412,7 @@ export function DiffViewer({ file, viewMode }: DiffViewerProps) {
         </div>
       )}
       <div className="diff-content">
-        {viewMode === "unified" ? (
+        {viewMode === "unified" || isFullFile ? (
           <UnifiedView lines={diffLines} highlights={highlights} />
         ) : (
           <SplitView splitLines={splitLines} highlights={highlights} />

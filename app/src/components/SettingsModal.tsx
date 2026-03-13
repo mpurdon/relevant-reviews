@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 interface Settings {
   model: string;
+  github_token: string;
+  aws_profile: string;
 }
 
 interface SettingsModalProps {
@@ -12,6 +14,8 @@ interface SettingsModalProps {
 
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [model, setModel] = useState("");
+  const [githubToken, setGithubToken] = useState("");
+  const [awsProfile, setAwsProfile] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -19,6 +23,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     if (open) {
       invoke<Settings>("get_settings").then((s) => {
         setModel(s.model);
+        setGithubToken(s.github_token || "");
+        setAwsProfile(s.aws_profile || "");
       });
       setSaved(false);
     }
@@ -28,7 +34,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     e.preventDefault();
     setSaving(true);
     try {
-      await invoke("save_settings", { settings: { model: model.trim() } });
+      await invoke("save_settings", {
+        settings: {
+          model: model.trim(),
+          github_token: githubToken.trim(),
+          aws_profile: awsProfile.trim(),
+        },
+      });
       setSaved(true);
       setTimeout(() => onClose(), 600);
     } finally {
@@ -66,6 +78,51 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             placeholder="arn:aws:bedrock:us-east-2:123456:application-inference-profile/..."
             spellCheck={false}
           />
+
+          <label className="settings-label" htmlFor="aws-profile">
+            AWS Profile
+          </label>
+          <p className="settings-hint">
+            The AWS profile name from <code>~/.aws/config</code> to use for
+            Bedrock authentication (e.g. <code>claude-code-bedrock</code>).
+            Run <code>aws sso login --profile &lt;name&gt;</code> to refresh
+            credentials.
+          </p>
+          <input
+            id="aws-profile"
+            className="settings-input"
+            type="text"
+            value={awsProfile}
+            onChange={(e) => {
+              setAwsProfile(e.target.value);
+              setSaved(false);
+            }}
+            placeholder="default"
+            spellCheck={false}
+          />
+
+          <label className="settings-label" htmlFor="github-token">
+            GitHub Token
+          </label>
+          <p className="settings-hint">
+            Personal access token for GitHub API. Needs <code>repo</code> scope
+            for private repos. Falls back to <code>GH_TOKEN</code> /{" "}
+            <code>GITHUB_TOKEN</code> env vars.
+          </p>
+          <input
+            id="github-token"
+            className="settings-input"
+            type="password"
+            value={githubToken}
+            onChange={(e) => {
+              setGithubToken(e.target.value);
+              setSaved(false);
+            }}
+            placeholder="ghp_... or github_pat_..."
+            spellCheck={false}
+            autoComplete="off"
+          />
+
           <div className="settings-actions">
             <button
               type="button"

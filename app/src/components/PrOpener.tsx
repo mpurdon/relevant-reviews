@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { ReviewManifest } from "../types";
 
 interface PrOpenerProps {
-  onManifestReady: (path: string) => void;
+  onManifestLoaded: (manifest: ReviewManifest) => void;
 }
 
-export function PrOpener({ onManifestReady }: PrOpenerProps) {
+export function PrOpener({ onManifestLoaded }: PrOpenerProps) {
   const [prRef, setPrRef] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -18,10 +19,10 @@ export function PrOpener({ onManifestReady }: PrOpenerProps) {
     setError(null);
 
     try {
-      const manifestPath = await invoke<string>("fetch_pr", {
+      const manifest = await invoke<ReviewManifest>("fetch_pr", {
         prRef: prRef.trim(),
       });
-      onManifestReady(manifestPath);
+      onManifestLoaded(manifest);
     } catch (err) {
       setError(String(err));
     } finally {

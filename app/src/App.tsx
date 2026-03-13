@@ -26,15 +26,19 @@ function App() {
   async function loadManifest(path: string) {
     try {
       const data = await invoke<ReviewManifest>("load_manifest", { path });
-      setManifest(data);
-      setViewedFiles(new Set());
-      if (data.files.length > 0) {
-        setSelectedFile(data.files[0]);
-      }
-      setError(null);
+      handleManifestLoaded(data);
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  function handleManifestLoaded(data: ReviewManifest) {
+    setManifest(data);
+    setViewedFiles(new Set());
+    if (data.files.length > 0) {
+      setSelectedFile(data.files[0]);
+    }
+    setError(null);
   }
 
   const toggleViewed = useCallback((filePath: string) => {
@@ -81,10 +85,10 @@ function App() {
         <div className="empty-message">
           <h1>Relevant Reviews</h1>
           <p>
-            Drop a manifest JSON file here, or run <code>rr</code> from the CLI
-            to open a PR review.
+            Drop a manifest JSON file here, or enter a PR URL below to start
+            a review.
           </p>
-          <PrOpener onManifestReady={loadManifest} />
+          <PrOpener onManifestLoaded={handleManifestLoaded} />
           <button
             className="settings-button"
             onClick={() => setSettingsOpen(true)}
