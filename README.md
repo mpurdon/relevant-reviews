@@ -1,3 +1,4 @@
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/bac674d0-5746-40f5-ae3a-d5b6c1318a3b" />
 # Relevant Reviews
 
 A CLI tool that fetches GitHub PRs, uses AI to classify which files contain relevant changes (business logic, infrastructure, API routes, etc.), and opens only those files for review -- either in a native desktop app or in VSCode.
