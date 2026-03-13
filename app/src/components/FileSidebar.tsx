@@ -127,7 +127,7 @@ export function FileSidebar({
                     onClick={() => onSelectFile(file)}
                     title={file.path}
                   >
-                    <label
+                    <span
                       className="viewed-checkbox"
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -136,7 +136,7 @@ export function FileSidebar({
                         checked={isViewed}
                         onChange={() => onToggleViewed(file.path)}
                       />
-                    </label>
+                    </span>
                     <span
                       className={`diff-type-badge ${getDiffTypeClass(file.diff_type)}`}
                     >
