@@ -19,6 +19,8 @@ export interface FileDiff {
   base_content: string;
   head_content: string;
   unified_diff: string;
+  additions: number;
+  deletions: number;
   highlights: Highlight[];
 }
 

@@ -1,80 +1,107 @@
-# <img width="32" height="32" alt="image" src="https://github.com/user-attachments/assets/f55b72d8-4189-47d5-b205-0186f9227a76" /> Relevant Reviews
+# Relevant Reviews
 
-A CLI tool that fetches GitHub PRs, uses AI to classify which files contain relevant changes (business logic, infrastructure, API routes, etc.), and opens only those files for review -- either in a native desktop app or in VSCode.
+A tool that fetches GitHub PRs, uses AI to classify which files contain relevant changes (business logic, infrastructure, API routes, etc.), and opens only those files for review in a native desktop app.
 
 ## How it works
 
-1. **Fetch** -- pulls the PR metadata and diff via the `gh` CLI
-2. **Classify** -- sends the file list and diff to Claude, which labels each file as RELEVANT or NOT_RELEVANT based on what it contains (backend logic, infra-as-code, API routes, etc.)
+1. **Fetch** -- pulls PR metadata, file list, and diff via the GitHub REST API
+2. **Classify** -- sends the file list and diff to Claude (via AWS Bedrock), which labels each file as RELEVANT or NOT_RELEVANT based on what it contains
 3. **Highlight** -- a second AI pass identifies specific lines in relevant files that deserve human attention (security changes, behavior changes, removed safety checks, etc.)
-4. **Review** -- opens the relevant diffs in the Relevant Reviews desktop app (or VSCode with `--vscode`)
+4. **Review** -- displays the relevant diffs in a split or unified viewer with syntax highlighting and AI-annotated risk indicators
 
-## Prerequisites
+## Desktop app
 
-- [GitHub CLI (`gh`)](https://cli.github.com/) -- authenticated with access to your repos
-- [Claude CLI (`claude`)](https://docs.anthropic.com/en/docs/claude-cli) -- for AI classification
-- A Claude model ARN (e.g., a Bedrock inference profile)
+The primary interface is a Tauri 2 desktop app with a React frontend and Rust backend. All GitHub and AI calls happen natively in Rust -- no CLI dependencies required.
 
-For the desktop app (optional):
+### Features
+
+- **PR opener** -- paste a PR URL or short ref (`owner/repo#123`) directly in the app
+- **AI classification** -- files are automatically categorized and scored by risk level (critical / high / medium / low)
+- **AI highlights** -- specific lines are annotated with severity (critical / warning / info) and explanatory comments
+- **Split and unified diff views** -- toggle between side-by-side and unified diff display
+- **File sidebar** -- files grouped by category with risk indicators; track which files you've reviewed
+- **Drag-and-drop** -- drop a manifest JSON file onto the app to load a review
+- **Settings** -- configure model ARN, GitHub token, and AWS profile from within the app
+
+### Prerequisites
 
 - [Rust](https://rustup.rs/)
-- [Bun](https://bun.sh/) (or npm/pnpm -- just update the Tauri `beforeBuildCommand`)
+- [Bun](https://bun.sh/) (used as the frontend package manager / build tool)
 - Tauri v2 prerequisites: see [Tauri Getting Started](https://v2.tauri.app/start/prerequisites/)
+- AWS credentials configured (env vars, `~/.aws/credentials`, or SSO)
 
-## Setup
-
-### 1. Configure the model
-
-The `rr` script needs a Claude model ARN. Set it one of two ways:
-
-```bash
-# Option A: environment variable
-export RR_MODEL="arn:aws:bedrock:us-east-2:123456789:application-inference-profile/your-profile-id"
-
-# Option B: config file
-mkdir -p ~/.config/relevant-reviews
-echo "model=arn:aws:bedrock:us-east-2:123456789:application-inference-profile/your-profile-id" > ~/.config/relevant-reviews/config
-```
-
-### 2. Make the script executable
-
-```bash
-chmod +x rr
-```
-
-### 3. (Optional) Add to PATH
-
-```bash
-# Symlink into a directory on your PATH
-ln -s "$(pwd)/rr" /usr/local/bin/rr
-```
-
-### 4. (Optional) Build the desktop app
+### Setup
 
 ```bash
 cd app
 bun install
-cargo tauri build
+```
+
+### Development
+
+```bash
+cd app
+bun run tauri dev
+```
+
+### Build
+
+```bash
+cd app
+bun run tauri build
 ```
 
 The built app will be at `app/src-tauri/target/release/bundle/macos/Relevant Reviews.app`.
 
-## Usage
+### Configuration
+
+Settings are stored in `~/.config/relevant-reviews/config` and can be edited from the app's Settings modal.
+
+| Setting | Description |
+|---|---|
+| `model` | AWS Bedrock model ARN (e.g., `arn:aws:bedrock:us-east-2:123456789:application-inference-profile/...`) |
+| `github_token` | GitHub personal access token (optional if `GH_TOKEN` or `GITHUB_TOKEN` env var is set) |
+| `aws_profile` | AWS profile name (optional, uses default credential chain if empty) |
+
+GitHub token resolution order: config file > `GH_TOKEN` env > `GITHUB_TOKEN` env.
+
+AWS region is extracted automatically from the model ARN.
+
+## CLI (`rr`)
+
+A standalone Bash script that performs the same fetch/classify/highlight workflow using the `gh` CLI and `claude` CLI. It can output results as a manifest JSON, print classification summaries, or open diffs in VSCode.
+
+### Prerequisites
+
+- [GitHub CLI (`gh`)](https://cli.github.com/) -- authenticated with access to your repos
+- [Claude CLI (`claude`)](https://docs.anthropic.com/en/docs/claude-cli) -- for AI classification
+- `jq`, `python3`
+
+### Setup
+
+```bash
+# Make the script executable
+chmod +x rr
+
+# (Optional) Symlink into a directory on your PATH
+ln -s "$(pwd)/rr" /usr/local/bin/rr
+
+# Set the model ARN (env var or config file)
+export RR_MODEL="arn:aws:bedrock:us-east-2:123456789:application-inference-profile/your-profile-id"
+# -- or --
+mkdir -p ~/.config/relevant-reviews
+echo "model=arn:aws:bedrock:us-east-2:123456789:application-inference-profile/your-profile-id" > ~/.config/relevant-reviews/config
+```
+
+### Usage
 
 ```
 rr <pr-url-or-ref> [options]
 ```
 
-### Arguments
-
-| Argument | Description |
+| Argument / Option | Description |
 |---|---|
 | `<pr-url-or-ref>` | GitHub PR URL, `owner/repo#number`, or just a number (if inside a repo) |
-
-### Options
-
-| Option | Description |
-|---|---|
 | `--list-only` | Only print the classification results, don't open any viewer |
 | `--manifest-only` | Build the manifest JSON and print its path |
 | `--vscode` | Open diffs in VSCode instead of the desktop app |
@@ -95,7 +122,7 @@ rr 123
 # List classification only
 rr 123 --list-only
 
-# Open in VSCode instead of the desktop app
+# Open in VSCode
 rr 123 --vscode
 ```
 
@@ -121,22 +148,34 @@ rr 123 --vscode
 ## Project structure
 
 ```
-rr                          # Main CLI script (bash)
-app/                        # Tauri desktop app
-  src/                      # React frontend
-    App.tsx                 # Main app component
+rr                              # Standalone CLI script (bash)
+app/                            # Tauri desktop app
+  package.json                  # Frontend dependencies (React 19, diff2html, Tauri API)
+  src/                          # React frontend
+    App.tsx                     # Main app component, routing between empty/review states
+    main.tsx                    # Entry point
+    types.ts                    # TypeScript types (ReviewManifest, FileDiff, Highlight)
+    styles.css                  # GitHub-dark themed styles
     components/
-      DiffViewer.tsx        # Split/unified diff viewer with syntax highlighting
-      FileSidebar.tsx       # File list grouped by category and risk
-      Header.tsx            # PR title, progress bar, view toggle
-      PrOpener.tsx          # Open a PR directly from the app
-      SettingsModal.tsx     # Configure model ARN
-    types.ts                # TypeScript types for the manifest
-    styles.css              # GitHub-dark themed styles
-  src-tauri/                # Rust backend
-    src/lib.rs              # Tauri commands (load manifest, fetch PR, settings)
-    src/main.rs             # Entry point
-    tauri.conf.json         # Tauri config
+      DiffViewer.tsx            # Split/unified diff viewer with syntax highlighting
+      FileSidebar.tsx           # File list grouped by category and risk level
+      Header.tsx                # PR title, progress bar, view toggle
+      PrOpener.tsx              # Open a PR directly from the app
+      SettingsModal.tsx         # Configure model ARN, GitHub token, AWS profile
+  src-tauri/                    # Rust backend
+    Cargo.toml                  # Rust dependencies (reqwest, aws-sdk-bedrockruntime, tauri)
+    src/
+      main.rs                   # Entry point
+      lib.rs                    # Module hub, Tauri builder
+      commands.rs               # Tauri command handlers
+      fetch.rs                  # Orchestrator: GitHub -> AI classify -> AI highlight -> manifest
+      github.rs                 # GitHub REST API client (reqwest)
+      bedrock.rs                # AWS Bedrock Converse API client
+      pr_parser.rs              # Parse PR URLs and short refs
+      prompts.rs                # AI prompt templates
+      config.rs                 # Settings load/save, token resolution
+      types.rs                  # Shared Rust data types
+    tauri.conf.json             # Tauri app config
 ```
 
 ## License

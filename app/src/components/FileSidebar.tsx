@@ -143,6 +143,10 @@ export function FileSidebar({
                       {getDiffTypeIcon(file.diff_type)}
                     </span>
                     <span className="file-name">{getFileName(file.path)}</span>
+                    <span className="line-stats">
+                      <span className="line-stat-add">+{file.additions}</span>
+                      <span className="line-stat-del">-{file.deletions}</span>
+                    </span>
                     <span
                       className={`risk-badge risk-${file.risk_level}`}
                     >

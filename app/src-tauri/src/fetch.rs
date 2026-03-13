@@ -46,6 +46,12 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
 
     let file_list: Vec<String> = pr_files.iter().map(|f| f.filename.clone()).collect();
 
+    // Index additions/deletions by filename for later use
+    let file_stats: HashMap<String, (u64, u64)> = pr_files
+        .iter()
+        .map(|f| (f.filename.clone(), (f.additions, f.deletions)))
+        .collect();
+
     // Step 3: AI classification
     let region = region_from_arn(&settings.model)?;
     let bedrock = BedrockClient::new(&region, &settings.aws_profile).await?;
@@ -150,6 +156,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
             .find(|c| c.path == *path)
             .unwrap();
 
+        let (additions, deletions) = file_stats.get(path).copied().unwrap_or((0, 0));
+
         file_diffs.push(FileDiff {
             path: path.clone(),
             classification: classification.classification.clone(),
@@ -160,6 +168,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
             base_content,
             head_content,
             unified_diff,
+            additions,
+            deletions,
             highlights: highlights_by_path.remove(path.as_str()).unwrap_or_default(),
         });
     }

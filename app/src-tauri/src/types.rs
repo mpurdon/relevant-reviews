@@ -21,6 +21,10 @@ pub struct FileDiff {
     pub head_content: String,
     pub unified_diff: String,
     #[serde(default)]
+    pub additions: u64,
+    #[serde(default)]
+    pub deletions: u64,
+    #[serde(default)]
     pub highlights: Vec<Highlight>,
 }
 
@@ -96,4 +100,8 @@ pub struct PrRef {
 pub struct PrFile {
     pub filename: String,
     pub status: String,
+    #[serde(default)]
+    pub additions: u64,
+    #[serde(default)]
+    pub deletions: u64,
 }

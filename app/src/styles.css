@@ -413,6 +413,23 @@ body {
   color: #d29922;
 }
 
+/* ─── Line Stats ───────────────────────────────────────────────────────── */
+.line-stats {
+  display: flex;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.line-stat-add {
+  color: var(--diff-add-text);
+}
+
+.line-stat-del {
+  color: var(--diff-remove-text);
+}
+
 .file-name {
   white-space: nowrap;
   overflow: hidden;
