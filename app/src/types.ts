@@ -36,3 +36,10 @@ export interface ReviewManifest {
 }
 
 export type DiffViewMode = "split" | "unified";
+
+export interface Tab {
+  id: string;
+  manifest: ReviewManifest;
+  selectedFile: FileDiff | null;
+  viewedFiles: Set<string>;
+}

@@ -1,19 +1,31 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileSidebar } from "./components/FileSidebar";
 import { DiffViewer } from "./components/DiffViewer";
 import { Header } from "./components/Header";
 import { PrOpener } from "./components/PrOpener";
 import { SettingsModal } from "./components/SettingsModal";
-import type { ReviewManifest, FileDiff, DiffViewMode } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab } from "./types";
 
 function App() {
-  const [manifest, setManifest] = useState<ReviewManifest | null>(null);
-  const [selectedFile, setSelectedFile] = useState<FileDiff | null>(null);
+  const nextTabId = useRef(1);
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<DiffViewMode>("split");
-  const [viewedFiles, setViewedFiles] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showOpener, setShowOpener] = useState(false);
+
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+
+  function createTab(manifest: ReviewManifest): Tab {
+    return {
+      id: String(nextTabId.current++),
+      manifest,
+      selectedFile: manifest.files.length > 0 ? manifest.files[0] : null,
+      viewedFiles: new Set(),
+    };
+  }
 
   useEffect(() => {
     invoke<string | null>("get_initial_manifest_path").then((path) => {
@@ -33,25 +45,48 @@ function App() {
   }
 
   function handleManifestLoaded(data: ReviewManifest) {
-    setManifest(data);
-    setViewedFiles(new Set());
-    if (data.files.length > 0) {
-      setSelectedFile(data.files[0]);
-    }
+    const tab = createTab(data);
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+    setShowOpener(false);
     setError(null);
   }
 
-  const toggleViewed = useCallback((filePath: string) => {
-    setViewedFiles((prev) => {
-      const next = new Set(prev);
+  function updateActiveTab(updater: (tab: Tab) => Tab) {
+    setTabs((prev) =>
+      prev.map((t) => (t.id === activeTabId ? updater(t) : t))
+    );
+  }
+
+  function setSelectedFile(file: FileDiff) {
+    updateActiveTab((t) => ({ ...t, selectedFile: file }));
+  }
+
+  function toggleViewed(filePath: string) {
+    updateActiveTab((t) => {
+      const next = new Set(t.viewedFiles);
       if (next.has(filePath)) {
         next.delete(filePath);
       } else {
         next.add(filePath);
       }
-      return next;
+      return { ...t, viewedFiles: next };
     });
-  }, []);
+  }
+
+  function closeTab(tabId: string) {
+    const idx = tabs.findIndex((t) => t.id === tabId);
+    const next = tabs.filter((t) => t.id !== tabId);
+    setTabs(next);
+    if (tabId === activeTabId) {
+      if (next.length === 0) {
+        setActiveTabId(null);
+      } else {
+        const newIdx = Math.min(idx, next.length - 1);
+        setActiveTabId(next[newIdx].id);
+      }
+    }
+  }
 
   async function handleFileDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -70,12 +105,21 @@ function App() {
         <div className="error-message">
           <h2>Error loading review</h2>
           <pre>{error}</pre>
+          <button
+            className="settings-button"
+            onClick={() => {
+              setError(null);
+            }}
+            style={{ marginTop: 16 }}
+          >
+            Back
+          </button>
         </div>
       </div>
     );
   }
 
-  if (!manifest) {
+  if (tabs.length === 0 || showOpener) {
     return (
       <div
         className="app empty-state"
@@ -89,18 +133,27 @@ function App() {
             a review.
           </p>
           <PrOpener onManifestLoaded={handleManifestLoaded} />
-          <button
-            className="settings-button"
-            onClick={() => setSettingsOpen(true)}
-            style={{ marginTop: 16 }}
-          >
-            Settings
-          </button>
-          <SettingsModal
-            open={settingsOpen}
-            onClose={() => setSettingsOpen(false)}
-          />
+          <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "center" }}>
+            {tabs.length > 0 && (
+              <button
+                className="settings-button"
+                onClick={() => setShowOpener(false)}
+              >
+                Cancel
+              </button>
+            )}
+            <button
+              className="settings-button"
+              onClick={() => setSettingsOpen(true)}
+            >
+              Settings
+            </button>
+          </div>
         </div>
+        <SettingsModal
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+        />
       </div>
     );
   }
@@ -108,37 +161,39 @@ function App() {
   return (
     <div className="app">
       <Header
-        manifest={manifest}
+        tabs={tabs}
+        activeTabId={activeTabId}
+        onSelectTab={setActiveTabId}
+        onCloseTab={closeTab}
+        onNewReview={() => setShowOpener(true)}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
-        viewedCount={viewedFiles.size}
+        viewedCount={activeTab?.viewedFiles.size ?? 0}
         onSettingsClick={() => setSettingsOpen(true)}
-        onNewReview={() => {
-          setManifest(null);
-          setSelectedFile(null);
-          setViewedFiles(new Set());
-        }}
+        manifest={activeTab?.manifest ?? null}
       />
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
-      <div className="main-content">
-        <FileSidebar
-          files={manifest.files}
-          selectedFile={selectedFile}
-          onSelectFile={setSelectedFile}
-          viewedFiles={viewedFiles}
-          onToggleViewed={toggleViewed}
-        />
-        <div className="diff-pane">
-          {selectedFile ? (
-            <DiffViewer file={selectedFile} viewMode={viewMode} />
-          ) : (
-            <div className="no-file-selected">Select a file to review</div>
-          )}
+      {activeTab && (
+        <div className="main-content">
+          <FileSidebar
+            files={activeTab.manifest.files}
+            selectedFile={activeTab.selectedFile}
+            onSelectFile={setSelectedFile}
+            viewedFiles={activeTab.viewedFiles}
+            onToggleViewed={toggleViewed}
+          />
+          <div className="diff-pane">
+            {activeTab.selectedFile ? (
+              <DiffViewer file={activeTab.selectedFile} viewMode={viewMode} />
+            ) : (
+              <div className="no-file-selected">Select a file to review</div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
