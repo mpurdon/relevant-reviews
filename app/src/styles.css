@@ -1176,6 +1176,71 @@ body {
   border-color: var(--text-muted);
 }
 
+/* ─── PR Summary (header bar) ──────────────────────────────────────────── */
+.header-summary {
+  padding: 8px 16px;
+  background: rgba(88, 166, 255, 0.06);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.header-summary p {
+  margin: 0 0 6px 0;
+}
+
+.header-summary p:last-child {
+  margin-bottom: 0;
+}
+
+.summary-toggle {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  padding: 0;
+}
+
+.summary-toggle:hover {
+  text-decoration: underline;
+}
+
+/* ─── PR Summary (diff pane placeholder) ──────────────────────────────── */
+.pr-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 32px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.pr-summary h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+
+.pr-summary p {
+  max-width: 600px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* ─── Change Group Description ─────────────────────────────────────────── */
+.change-group-description {
+  padding: 0 16px 6px 28px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
 /* ─── Scrollbar Styling ─────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 8px;

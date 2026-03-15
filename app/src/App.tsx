@@ -5,6 +5,7 @@ import { DiffViewer } from "./components/DiffViewer";
 import { Header } from "./components/Header";
 import { PrOpener } from "./components/PrOpener";
 import { SettingsModal } from "./components/SettingsModal";
+import { SummaryParagraphs } from "./components/SummaryParagraphs";
 import type { ReviewManifest, FileDiff, DiffViewMode, Tab } from "./types";
 
 function App() {
@@ -180,6 +181,7 @@ function App() {
         <div className="main-content">
           <FileSidebar
             files={activeTab.manifest.files}
+            changeGroups={activeTab.manifest.change_groups ?? []}
             selectedFile={activeTab.selectedFile}
             onSelectFile={setSelectedFile}
             viewedFiles={activeTab.viewedFiles}
@@ -188,6 +190,11 @@ function App() {
           <div className="diff-pane">
             {activeTab.selectedFile ? (
               <DiffViewer file={activeTab.selectedFile} viewMode={viewMode} />
+            ) : activeTab.manifest.summary ? (
+              <div className="pr-summary">
+                <h3>PR Summary</h3>
+                <SummaryParagraphs text={activeTab.manifest.summary} />
+              </div>
             ) : (
               <div className="no-file-selected">Select a file to review</div>
             )}

@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { open } from "@tauri-apps/plugin-shell";
+import { SummaryParagraphs } from "./SummaryParagraphs";
 import type { ReviewManifest, DiffViewMode, Tab } from "../types";
 
 interface HeaderProps {
@@ -28,6 +30,8 @@ export function Header({
 }: HeaderProps) {
   const totalCount = manifest?.files.length ?? 0;
   const progress = totalCount > 0 ? (viewedCount / totalCount) * 100 : 0;
+  const [summaryExpanded, setSummaryExpanded] = useState(true);
+  const hasSummary = !!manifest?.summary;
 
   return (
     <header className="header">
@@ -67,6 +71,15 @@ export function Header({
             <div className="progress-bar">
               <div className="progress-fill" style={{ width: `${progress}%` }} />
             </div>
+            {hasSummary && (
+              <button
+                className="summary-toggle"
+                onClick={() => setSummaryExpanded((p) => !p)}
+                title={summaryExpanded ? "Hide summary" : "Show summary"}
+              >
+                {summaryExpanded ? "Hide Summary" : "Show Summary"}
+              </button>
+            )}
           </div>
           <div className="header-right">
             <div className="view-toggle">
@@ -97,6 +110,11 @@ export function Header({
               Settings
             </button>
           </div>
+        </div>
+      )}
+      {hasSummary && summaryExpanded && (
+        <div className="header-summary">
+          <SummaryParagraphs text={manifest!.summary} />
         </div>
       )}
     </header>

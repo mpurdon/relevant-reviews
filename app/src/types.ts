@@ -24,6 +24,12 @@ export interface FileDiff {
   highlights: Highlight[];
 }
 
+export interface ChangeGroup {
+  label: string;
+  description: string;
+  file_paths: string[];
+}
+
 export interface ReviewManifest {
   pr_title: string;
   pr_url: string;
@@ -32,6 +38,8 @@ export interface ReviewManifest {
   head_ref: string;
   base_sha: string;
   head_sha: string;
+  summary: string;
+  change_groups: ChangeGroup[];
   files: FileDiff[];
 }
 

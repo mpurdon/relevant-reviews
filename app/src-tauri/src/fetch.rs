@@ -2,9 +2,9 @@ use crate::bedrock::{extract_json_array, region_from_arn, BedrockClient};
 use crate::config::resolve_github_token;
 use crate::github::GithubClient;
 use crate::pr_parser::parse_pr_ref;
-use crate::prompts::{build_classification_prompt, build_highlight_prompt};
+use crate::prompts::{build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_summary_prompt};
 use crate::types::{
-    FileClassification, FileDiff, Highlight, HighlightResult, ReviewManifest, Settings,
+    ChangeGroup, FileClassification, FileDiff, Highlight, HighlightResult, ReviewManifest, Settings,
 };
 use std::collections::HashMap;
 
@@ -81,19 +81,27 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
             head_ref,
             base_sha,
             head_sha,
+            summary: String::new(),
+            change_groups: vec![],
             files: vec![],
         });
     }
 
-    // Step 4: AI highlight analysis
-    let per_file_diffs = extract_per_file_diffs(&full_diff, &relevant);
-
+    // Step 4: AI highlight analysis + summary + grouping (parallel)
+    let per_file_diff_map = build_per_file_diff_map(&full_diff);
+    let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
     let highlight_prompt = build_highlight_prompt(&pr_title, &per_file_diffs);
 
-    let highlights_raw = bedrock
-        .invoke_model(&settings.model, &highlight_prompt)
-        .await
-        .unwrap_or_else(|_| "[]".to_string());
+    let summary_prompt = build_summary_prompt(&pr_title, &relevant);
+    let grouping_prompt = build_grouping_prompt(&pr_title, &relevant);
+
+    let (highlights_raw, summary_raw, grouping_raw) = tokio::join!(
+        bedrock.invoke_model(&settings.model, &highlight_prompt),
+        bedrock.invoke_model(&settings.model, &summary_prompt),
+        bedrock.invoke_model(&settings.model, &grouping_prompt),
+    );
+
+    let highlights_raw = highlights_raw.unwrap_or_else(|_| "[]".to_string());
 
     let highlights_json = extract_json_array(&highlights_raw).unwrap_or_else(|_| {
         serde_json::Value::Array(vec![])
@@ -101,6 +109,14 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
 
     let highlight_results: Vec<HighlightResult> =
         serde_json::from_value(highlights_json).unwrap_or_default();
+
+    let summary = summary_raw.unwrap_or_default();
+
+    let change_groups: Vec<ChangeGroup> = grouping_raw
+        .ok()
+        .and_then(|raw| extract_json_array(&raw).ok())
+        .and_then(|json| serde_json::from_value(json).ok())
+        .unwrap_or_default();
 
     // Index highlights by file path
     let mut highlights_by_path: HashMap<String, Vec<Highlight>> = HashMap::new();
@@ -116,22 +132,29 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
             });
     }
 
-    // Step 5: Fetch file contents for all relevant files
-    // For each file, fetch base and head in parallel
-    let mut contents: Vec<(String, Result<String, String>, Result<String, String>)> = Vec::new();
-    for f in &relevant {
-        let (base_content, head_content) = tokio::join!(
-            github.get_file_content(&parsed.owner, &parsed.repo, &f.path, &base_sha),
-            github.get_file_content(&parsed.owner, &parsed.repo, &f.path, &head_sha),
-        );
-        contents.push((f.path.clone(), base_content, head_content));
-    }
+    // Step 5: Fetch file contents for all relevant files concurrently
+    let content_futures: Vec<_> = relevant
+        .iter()
+        .map(|f| {
+            let path = f.path.clone();
+            let owner = parsed.owner.clone();
+            let repo = parsed.repo.clone();
+            let base = base_sha.clone();
+            let head = head_sha.clone();
+            let gh = &github;
+            async move {
+                let (base_content, head_content) = tokio::join!(
+                    gh.get_file_content(&owner, &repo, &path, &base),
+                    gh.get_file_content(&owner, &repo, &path, &head),
+                );
+                (path, base_content, head_content)
+            }
+        })
+        .collect();
+    let contents = futures::future::join_all(content_futures).await;
 
     // Step 6: Build the manifest
     let mut file_diffs = Vec::new();
-
-    // Build a map of per-file diffs from the full diff
-    let per_file_diff_map = build_per_file_diff_map(&full_diff);
 
     for (path, base_result, head_result) in &contents {
         let base_content = base_result.as_deref().unwrap_or("").to_string();
@@ -182,16 +205,17 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
         head_ref,
         base_sha,
         head_sha,
+        summary,
+        change_groups,
         files: file_diffs,
     })
 }
 
-/// Extract per-file diffs for the relevant files from the full PR diff.
+/// Extract per-file diffs for the relevant files from a pre-built diff map.
 fn extract_per_file_diffs(
-    full_diff: &str,
+    diff_map: &HashMap<String, String>,
     relevant: &[&FileClassification],
 ) -> Vec<(String, String)> {
-    let diff_map = build_per_file_diff_map(full_diff);
     let mut result = Vec::new();
 
     for f in relevant {

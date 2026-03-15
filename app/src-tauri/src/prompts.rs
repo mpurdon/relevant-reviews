@@ -1,3 +1,5 @@
+use crate::types::FileClassification;
+
 pub const CLASSIFICATION_PROMPT: &str = r#"You are a code review assistant. Your job is to classify changed files in a pull request as either RELEVANT or NOT_RELEVANT for a business logic / infrastructure review.
 
 RELEVANT files include:
@@ -74,6 +76,72 @@ For each highlight, provide:
 
 Respond with ONLY a valid JSON array of these highlight objects. If there are no notable changes, return an empty array [].
 Do NOT include any text before or after the JSON array. Just the JSON."#;
+
+pub const SUMMARY_PROMPT: &str = r#"You are a code review assistant. Given a PR title and a list of relevant files with their classifications and AI-generated reasons, write a concise executive summary for a code reviewer.
+
+The summary should:
+1. Start with a 1-2 sentence overview of what this PR does
+2. Call out the most important areas to focus on (security-sensitive changes, API contract changes, infra changes)
+3. Note any patterns across the changes (e.g., "Most changes are in the payment service" or "This is primarily a refactor with one behavioral change in X")
+4. Be 3-5 short paragraphs — enough to orient the reviewer, not a full analysis
+
+Format the summary as separate paragraphs separated by blank lines. Each paragraph should cover a distinct aspect (overview, critical areas, patterns, etc.). No JSON, no markdown headers, no bullet points — just well-structured prose paragraphs."#;
+
+pub const GROUPING_PROMPT: &str = r#"You are a code review assistant. Given a PR title and a list of relevant files with their classifications and reasons, group the files into logical change sets.
+
+Each group should represent a coherent unit of work — files that were changed together for the same reason. Examples:
+- "Add payment webhook handler" (the new route, service, types, and test helper)
+- "Refactor auth middleware" (the middleware file plus all callers that were updated)
+- "Rename userId to accountId" (a mechanical rename across many files)
+
+Rules:
+- Every file must appear in exactly one group
+- Use 2-6 groups (don't create a group per file, and don't put everything in one group)
+- If many files share the same mechanical change (rename, import path update, etc.), group them together and label it clearly as mechanical
+- Order groups by importance — the most significant change first
+
+Respond with ONLY a valid JSON array. Each element must be an object with:
+- "label": a short name for the change (under 8 words)
+- "description": one sentence explaining what this group of changes does
+- "file_paths": array of file paths belonging to this group
+
+Do NOT include any text before or after the JSON array. Just the JSON."#;
+
+pub fn build_summary_prompt(
+    pr_title: &str,
+    relevant_files: &[&FileClassification],
+) -> String {
+    build_file_context_prompt(SUMMARY_PROMPT, pr_title, relevant_files)
+}
+
+pub fn build_grouping_prompt(
+    pr_title: &str,
+    relevant_files: &[&FileClassification],
+) -> String {
+    build_file_context_prompt(GROUPING_PROMPT, pr_title, relevant_files)
+}
+
+fn build_file_context_prompt(
+    system_prompt: &str,
+    pr_title: &str,
+    relevant_files: &[&FileClassification],
+) -> String {
+    let mut file_info = String::new();
+    for f in relevant_files {
+        file_info.push_str(&format!(
+            "- {} [{}] [{}] — {}\n",
+            f.path, f.category, f.risk_level, f.reason
+        ));
+    }
+
+    format!(
+        "{}\n\n---\n\nPR Title: {}\n\nRelevant files ({} total):\n\n{}",
+        system_prompt,
+        pr_title,
+        relevant_files.len(),
+        file_info
+    )
+}
 
 pub fn build_classification_prompt(
     pr_title: &str,

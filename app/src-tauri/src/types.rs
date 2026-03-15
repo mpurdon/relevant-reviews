@@ -33,6 +33,13 @@ fn default_risk_level() -> String {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChangeGroup {
+    pub label: String,
+    pub description: String,
+    pub file_paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReviewManifest {
     pub pr_title: String,
     pub pr_url: String,
@@ -41,6 +48,10 @@ pub struct ReviewManifest {
     pub head_ref: String,
     pub base_sha: String,
     pub head_sha: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub change_groups: Vec<ChangeGroup>,
     pub files: Vec<FileDiff>,
 }
 

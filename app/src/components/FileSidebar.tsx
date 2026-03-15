@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
-import type { FileDiff, RiskLevel } from "../types";
+import { useEffect, useMemo, useState } from "react";
+import type { FileDiff, RiskLevel, ChangeGroup } from "../types";
 
-type SidebarView = "category" | "tree";
+type SidebarView = "category" | "groups" | "tree";
 
 interface FileSidebarProps {
   files: FileDiff[];
+  changeGroups: ChangeGroup[];
   selectedFile: FileDiff | null;
   onSelectFile: (file: FileDiff) => void;
   viewedFiles: Set<string>;
@@ -292,12 +293,18 @@ function TreeFolder({
 
 export function FileSidebar({
   files,
+  changeGroups,
   selectedFile,
   onSelectFile,
   viewedFiles,
   onToggleViewed,
 }: FileSidebarProps) {
-  const [view, setView] = useState<SidebarView>("category");
+  const hasGroups = changeGroups.length > 0;
+  const [view, setView] = useState<SidebarView>(hasGroups ? "groups" : "category");
+
+  useEffect(() => {
+    setView(hasGroups ? "groups" : "category");
+  }, [hasGroups]);
 
   const criticalFiles = useMemo(() => {
     return files
@@ -328,6 +335,12 @@ export function FileSidebar({
 
   const fileTree = useMemo(() => buildFileTree(files), [files]);
 
+  const filesByPath = useMemo(() => {
+    const map = new Map<string, FileDiff>();
+    for (const f of files) map.set(f.path, f);
+    return map;
+  }, [files]);
+
   const sortedCategories = useMemo(() => {
     const order = ["Business Logic", "Infrastructure", "Domain Types", "Other"];
     return Object.keys(grouped).sort((a, b) => {
@@ -357,6 +370,15 @@ export function FileSidebar({
           Files ({viewedCount}/{totalCount} viewed)
         </span>
         <div className="sidebar-view-toggle">
+          {hasGroups && (
+            <button
+              className={view === "groups" ? "active" : ""}
+              onClick={() => setView("groups")}
+              title="Group by logical change"
+            >
+              Groups
+            </button>
+          )}
           <button
             className={view === "category" ? "active" : ""}
             onClick={() => setView("category")}
@@ -374,7 +396,42 @@ export function FileSidebar({
         </div>
       </div>
       <nav className="file-list">
-        {view === "category" ? (
+        {view === "groups" ? (
+          <>
+            {changeGroups.map((group, idx) => {
+              const groupKey = `group:${idx}`;
+              const groupFiles = group.file_paths
+                .map((p) => filesByPath.get(p))
+                .filter((f): f is FileDiff => f !== undefined);
+              return (
+                <div key={groupKey} className="file-group change-group">
+                  <button
+                    className="group-header group-toggle"
+                    onClick={() => toggleCollapsed(groupKey)}
+                  >
+                    <span className={`collapse-chevron ${collapsed.has(groupKey) ? "collapsed" : ""}`}>&#9662;</span>
+                    {group.label}
+                    <span className="group-count">{groupFiles.length}</span>
+                  </button>
+                  {!collapsed.has(groupKey) && (<>
+                  <div className="change-group-description">{group.description}</div>
+                  {groupFiles.map((file) => (
+                    <FileItem
+                      key={file.path}
+                      file={file}
+                      selectedFile={selectedFile}
+                      isViewed={viewedFiles.has(file.path)}
+                      onSelectFile={onSelectFile}
+                      onToggleViewed={onToggleViewed}
+                      showPathHint
+                    />
+                  ))}
+                  </>)}
+                </div>
+              );
+            })}
+          </>
+        ) : view === "category" ? (
           <>
             {criticalFiles.length > 0 && (
               <div className="file-group critical-group">
