@@ -319,6 +319,39 @@ body {
   color: var(--text-secondary);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-view-toggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.sidebar-view-toggle button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+
+.sidebar-view-toggle button:first-child {
+  border-right: 1px solid var(--border);
+}
+
+.sidebar-view-toggle button.active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.sidebar-view-toggle button:hover:not(.active) {
+  color: var(--text-secondary);
 }
 
 .file-list {
@@ -337,6 +370,74 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-muted);
+}
+
+.group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.group-toggle:hover {
+  color: var(--text-primary);
+}
+
+.collapse-chevron {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.collapse-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.group-count {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* ─── File Tree View ───────────────────────────────────────────────────── */
+.file-tree {
+  padding: 4px 0;
+}
+
+.tree-folder-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 4px 16px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  color: var(--text-secondary);
+}
+
+.tree-folder-toggle:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.tree-folder-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.tree-folder-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .file-item-wrapper {

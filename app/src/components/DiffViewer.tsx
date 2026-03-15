@@ -255,6 +255,10 @@ function isHighlightStart(
   return highlights.find((h) => lineNum === h.start_line);
 }
 
+function formatLineRange(start: number, end: number): string {
+  return `L${start}${end !== start ? `–${end}` : ""}`;
+}
+
 const severityIcon: Record<string, string> = {
   critical: "!!",
   warning: "!",
@@ -267,6 +271,7 @@ function HighlightMarker({ highlight }: { highlight: Highlight }) {
       <span className="highlight-icon">
         {severityIcon[highlight.severity] || "i"}
       </span>
+      <span className="highlight-lines">{formatLineRange(highlight.start_line, highlight.end_line)}</span>
       <span className="highlight-comment">{highlight.comment}</span>
     </div>
   );
@@ -422,7 +427,7 @@ export function DiffViewer({ file, viewMode }: DiffViewerProps) {
           {highlights.map((h, i) => (
             <div key={i} className={`highlights-summary-item highlight-${h.severity}`}>
               <span className="highlight-severity-badge">{h.severity.toUpperCase()}</span>
-              <span className="highlight-lines">L{h.start_line}{h.end_line !== h.start_line ? `–${h.end_line}` : ""}</span>
+              <span className="highlight-lines">{formatLineRange(h.start_line, h.end_line)}</span>
               <span className="highlight-summary-text">{h.comment}</span>
             </div>
           ))}
