@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FileDiff, RiskLevel, ChangeGroup } from "../types";
 
 type SidebarView = "category" | "groups" | "tree";
@@ -301,9 +301,14 @@ export function FileSidebar({
 }: FileSidebarProps) {
   const hasGroups = changeGroups.length > 0;
   const [view, setView] = useState<SidebarView>(hasGroups ? "groups" : "category");
+  const prevHasGroups = useRef(hasGroups);
 
   useEffect(() => {
-    setView(hasGroups ? "groups" : "category");
+    // Only auto-switch when groups first arrive, not on every tab switch
+    if (hasGroups && !prevHasGroups.current) {
+      setView("groups");
+    }
+    prevHasGroups.current = hasGroups;
   }, [hasGroups]);
 
   const criticalFiles = useMemo(() => {
@@ -333,22 +338,11 @@ export function FileSidebar({
     return groups;
   }, [files]);
 
-  const fileTree = useMemo(() => buildFileTree(files), [files]);
-
   const filesByPath = useMemo(() => {
     const map = new Map<string, FileDiff>();
     for (const f of files) map.set(f.path, f);
     return map;
   }, [files]);
-
-  const sortedCategories = useMemo(() => {
-    const order = ["Business Logic", "Infrastructure", "Domain Types", "Other"];
-    return Object.keys(grouped).sort((a, b) => {
-      const ai = order.indexOf(a);
-      const bi = order.indexOf(b);
-      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-    });
-  }, [grouped]);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set([NEEDS_ATTENTION]));
   const toggleCollapsed = (section: string) => {
@@ -359,6 +353,48 @@ export function FileSidebar({
       return next;
     });
   };
+
+  const [hideViewed, setHideViewed] = useState(true);
+
+  const visiblePaths = useMemo(() => {
+    if (!hideViewed) return null; // null = show all
+    const set = new Set<string>();
+    for (const f of files) {
+      if (!viewedFiles.has(f.path)) set.add(f.path);
+    }
+    return set;
+  }, [files, viewedFiles, hideViewed]);
+
+  const isVisible = (f: { path: string }) => visiblePaths === null || visiblePaths.has(f.path);
+
+  const visibleCriticalFiles = useMemo(() => {
+    if (!visiblePaths) return criticalFiles;
+    return criticalFiles.filter((f) => visiblePaths.has(f.path));
+  }, [criticalFiles, visiblePaths]);
+
+  const visibleGrouped = useMemo(() => {
+    if (!visiblePaths) return grouped;
+    const filtered: GroupedFiles = {};
+    for (const [cat, catFiles] of Object.entries(grouped)) {
+      const visible = catFiles.filter((f) => visiblePaths.has(f.path));
+      if (visible.length > 0) filtered[cat] = visible;
+    }
+    return filtered;
+  }, [grouped, visiblePaths]);
+
+  const visibleFileTree = useMemo(() => {
+    if (!visiblePaths) return buildFileTree(files);
+    return buildFileTree(files.filter((f) => visiblePaths.has(f.path)));
+  }, [files, visiblePaths]);
+
+  const visibleCategories = useMemo(() => {
+    const order = ["Business Logic", "Infrastructure", "Domain Types", "Other"];
+    return Object.keys(visibleGrouped).sort((a, b) => {
+      const ai = order.indexOf(a);
+      const bi = order.indexOf(b);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
+  }, [visibleGrouped]);
 
   const viewedCount = viewedFiles.size;
   const totalCount = files.length;
@@ -395,6 +431,15 @@ export function FileSidebar({
           </button>
         </div>
       </div>
+      {viewedCount > 0 && (
+        <button
+          className={`hide-viewed-toggle ${hideViewed ? "active" : ""}`}
+          onClick={() => setHideViewed((h) => !h)}
+        >
+          {hideViewed ? "Show reviewed" : "Hide reviewed"}
+          <span className="hide-viewed-count">{viewedCount}</span>
+        </button>
+      )}
       <nav className="file-list">
         {view === "groups" ? (
           <>
@@ -402,7 +447,8 @@ export function FileSidebar({
               const groupKey = `group:${idx}`;
               const groupFiles = group.file_paths
                 .map((p) => filesByPath.get(p))
-                .filter((f): f is FileDiff => f !== undefined);
+                .filter((f): f is FileDiff => f !== undefined && isVisible(f));
+              if (groupFiles.length === 0) return null;
               return (
                 <div key={groupKey} className="file-group change-group">
                   <button
@@ -433,7 +479,7 @@ export function FileSidebar({
           </>
         ) : view === "category" ? (
           <>
-            {criticalFiles.length > 0 && (
+            {visibleCriticalFiles.length > 0 && (
               <div className="file-group critical-group">
                 <button
                   className="group-header group-toggle"
@@ -441,9 +487,9 @@ export function FileSidebar({
                 >
                   <span className={`collapse-chevron ${collapsed.has(NEEDS_ATTENTION) ? "collapsed" : ""}`}>&#9662;</span>
                   {NEEDS_ATTENTION}
-                  <span className="group-count">{criticalFiles.length}</span>
+                  <span className="group-count">{visibleCriticalFiles.length}</span>
                 </button>
-                {!collapsed.has(NEEDS_ATTENTION) && criticalFiles.map((file) => (
+                {!collapsed.has(NEEDS_ATTENTION) && visibleCriticalFiles.map((file) => (
                   <FileItem
                     key={file.path}
                     file={file}
@@ -456,7 +502,7 @@ export function FileSidebar({
                 ))}
               </div>
             )}
-            {sortedCategories.map((category) => (
+            {visibleCategories.map((category) => (
               <div key={category} className="file-group">
                 <button
                   className="group-header group-toggle"
@@ -464,9 +510,9 @@ export function FileSidebar({
                 >
                   <span className={`collapse-chevron ${collapsed.has(category) ? "collapsed" : ""}`}>&#9662;</span>
                   {category}
-                  <span className="group-count">{grouped[category].length}</span>
+                  <span className="group-count">{visibleGrouped[category].length}</span>
                 </button>
-                {!collapsed.has(category) && grouped[category].map((file) => (
+                {!collapsed.has(category) && visibleGrouped[category].map((file) => (
                   <FileItem
                     key={file.path}
                     file={file}
@@ -483,7 +529,7 @@ export function FileSidebar({
         ) : (
           <div className="file-tree">
             <TreeFolder
-              node={fileTree}
+              node={visibleFileTree}
               depth={0}
               collapsed={collapsed}
               toggleCollapsed={toggleCollapsed}
