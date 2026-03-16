@@ -4,11 +4,32 @@ use crate::github::GithubClient;
 use crate::pr_parser::parse_pr_ref;
 use crate::prompts::{build_classification_prompt, build_grouping_prompt, build_highlight_prompt, build_summary_prompt};
 use crate::types::{
-    ChangeGroup, FileClassification, FileDiff, Highlight, HighlightResult, ReviewManifest, Settings,
+    ChangeGroup, FetchProgress, FetchStatus, FileClassification, FileDiff, Highlight, HighlightResult, ReviewManifest, Settings,
 };
+use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::HashMap;
+use tauri::Emitter;
 
-pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewManifest, String> {
+fn emit_progress(
+    app: &tauri::AppHandle,
+    step: u8,
+    label: &str,
+    status: FetchStatus,
+    pr_title: Option<&str>,
+    files: Option<(u32, u32)>,
+) {
+    let _ = app.emit("fetch-progress", FetchProgress {
+        step,
+        total_steps: 6,
+        label: label.to_string(),
+        status,
+        pr_title: pr_title.map(|s| s.to_string()),
+        files_done: files.map(|(d, _)| d),
+        files_total: files.map(|(_, t)| t),
+    });
+}
+
+pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings, app: &tauri::AppHandle) -> Result<ReviewManifest, String> {
     if settings.model.is_empty() {
         return Err("No model ARN configured. Set it in Settings.".to_string());
     }
@@ -19,11 +40,12 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
     let github = GithubClient::new(token);
 
     // Step 1: Fetch PR metadata
+    emit_progress(app, 1, "Fetching PR metadata", FetchStatus::Running, None, None);
     let metadata = github
         .get_pr_metadata(&parsed.owner, &parsed.repo, parsed.number)
         .await?;
-
     let pr_title = metadata.title;
+    emit_progress(app, 1, "Fetching PR metadata", FetchStatus::Done, Some(&pr_title), None);
     let pr_url = metadata.html_url;
     let pr_number = metadata.number;
     let base_ref = metadata.base.ref_name;
@@ -32,6 +54,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
     let head_sha = metadata.head.sha;
 
     // Step 2: Fetch PR file list and diff in parallel
+    emit_progress(app, 2, "Fetching files and diff", FetchStatus::Running, None, None);
     let (files_result, diff_result) = tokio::join!(
         github.get_pr_files(&parsed.owner, &parsed.repo, parsed.number),
         github.get_pr_diff(&parsed.owner, &parsed.repo, parsed.number),
@@ -39,6 +62,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
 
     let pr_files = files_result?;
     let full_diff = diff_result?;
+    emit_progress(app, 2, "Fetching files and diff", FetchStatus::Done, None, None);
 
     if pr_files.is_empty() {
         return Err("No changed files found in this PR.".to_string());
@@ -53,6 +77,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
         .collect();
 
     // Step 3: AI classification
+    emit_progress(app, 3, "Classifying files with AI", FetchStatus::Running, None, None);
     let region = region_from_arn(&settings.model)?;
     let bedrock = BedrockClient::new(&region, &settings.aws_profile).await?;
 
@@ -66,6 +91,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
     let classification_json = extract_json_array(&classification_raw)?;
     let classifications: Vec<FileClassification> = serde_json::from_value(classification_json)
         .map_err(|e| format!("Failed to parse classification: {}", e))?;
+    emit_progress(app, 3, "Classifying files with AI", FetchStatus::Done, None, None);
 
     let relevant: Vec<&FileClassification> = classifications
         .iter()
@@ -88,6 +114,7 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
     }
 
     // Step 4: AI highlight analysis + summary + grouping (parallel)
+    emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((0, 3)));
     let per_file_diff_map = build_per_file_diff_map(&full_diff);
     let per_file_diffs = extract_per_file_diffs(&per_file_diff_map, &relevant);
     let highlight_prompt = build_highlight_prompt(&pr_title, &per_file_diffs);
@@ -95,11 +122,27 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
     let summary_prompt = build_summary_prompt(&pr_title, &relevant);
     let grouping_prompt = build_grouping_prompt(&pr_title, &relevant);
 
-    let (highlights_raw, summary_raw, grouping_raw) = tokio::join!(
-        bedrock.invoke_model(&settings.model, &highlight_prompt),
-        bedrock.invoke_model(&settings.model, &summary_prompt),
-        bedrock.invoke_model(&settings.model, &grouping_prompt),
-    );
+    let mut ai_stream: FuturesUnordered<_> = [
+        ("highlights", bedrock.invoke_model(&settings.model, &highlight_prompt)),
+        ("summary", bedrock.invoke_model(&settings.model, &summary_prompt)),
+        ("grouping", bedrock.invoke_model(&settings.model, &grouping_prompt)),
+    ].into_iter().map(|(name, fut)| async move { (name, fut.await) }).collect();
+
+    let mut highlights_raw = Err("not started".to_string());
+    let mut summary_raw = Err("not started".to_string());
+    let mut grouping_raw = Err("not started".to_string());
+    let mut ai_done: u32 = 0;
+    while let Some((name, result)) = ai_stream.next().await {
+        ai_done += 1;
+        emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Running, None, Some((ai_done, 3)));
+        match name {
+            "highlights" => highlights_raw = result,
+            "summary" => summary_raw = result,
+            "grouping" => grouping_raw = result,
+            _ => {}
+        }
+    }
+    emit_progress(app, 4, "Analyzing highlights, summary, and grouping", FetchStatus::Done, None, None);
 
     let highlights_raw = highlights_raw.unwrap_or_else(|_| "[]".to_string());
 
@@ -133,6 +176,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
     }
 
     // Step 5: Fetch file contents for all relevant files concurrently
+    let files_total = relevant.len() as u32;
+    emit_progress(app, 5, "Fetching file contents", FetchStatus::Running, None, Some((0, files_total)));
     let content_futures: Vec<_> = relevant
         .iter()
         .map(|f| {
@@ -151,9 +196,19 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
             }
         })
         .collect();
-    let contents = futures::future::join_all(content_futures).await;
+
+    let mut stream: FuturesUnordered<_> = content_futures.into_iter().collect();
+    let mut contents = Vec::with_capacity(files_total as usize);
+    let mut files_done: u32 = 0;
+    while let Some(result) = stream.next().await {
+        files_done += 1;
+        emit_progress(app, 5, "Fetching file contents", FetchStatus::Running, None, Some((files_done, files_total)));
+        contents.push(result);
+    }
+    emit_progress(app, 5, "Fetching file contents", FetchStatus::Done, None, None);
 
     // Step 6: Build the manifest
+    emit_progress(app, 6, "Building review manifest", FetchStatus::Running, None, None);
     let mut file_diffs = Vec::new();
 
     for (path, base_result, head_result) in &contents {
@@ -212,6 +267,8 @@ pub async fn fetch_pr_impl(pr_ref: &str, settings: &Settings) -> Result<ReviewMa
             hunk_scores,
         });
     }
+
+    emit_progress(app, 6, "Building review manifest", FetchStatus::Done, None, None);
 
     Ok(ReviewManifest {
         pr_title,

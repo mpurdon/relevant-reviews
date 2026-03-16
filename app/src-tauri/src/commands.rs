@@ -34,7 +34,7 @@ pub fn get_initial_manifest_path(state: State<AppState>) -> Option<String> {
 }
 
 #[command]
-pub async fn fetch_pr(pr_ref: String) -> Result<ReviewManifest, String> {
+pub async fn fetch_pr(app: tauri::AppHandle, pr_ref: String) -> Result<ReviewManifest, String> {
     let settings = load_settings();
-    fetch_pr_impl(&pr_ref, &settings).await
+    fetch_pr_impl(&pr_ref, &settings, &app).await
 }

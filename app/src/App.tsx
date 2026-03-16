@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { FileSidebar } from "./components/FileSidebar";
 import { DiffViewer } from "./components/DiffViewer";
 import { Header } from "./components/Header";
 import { PrOpener } from "./components/PrOpener";
+import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, HunkSignificanceFilter } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter } from "./types";
 
 function App() {
   const nextTabId = useRef(1);
@@ -19,6 +21,11 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showOpener, setShowOpener] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loadingPrRef, setLoadingPrRef] = useState("");
+  const [loadingPrTitle, setLoadingPrTitle] = useState<string | null>(null);
+  const [progress, setProgress] = useState<FetchProgress | null>(null);
+  const [fileCounts, setFileCounts] = useState<Record<number, { done: number; total: number }>>({});
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
@@ -54,6 +61,54 @@ function App() {
     setActiveTabId(tab.id);
     setShowOpener(false);
     setError(null);
+  }
+
+  const unlistenRef = useRef<(() => void) | null>(null);
+
+  async function handleFetchStart(prRef: string) {
+    if (loading) return;
+    setLoading(true);
+    setLoadingPrRef(prRef);
+    setLoadingPrTitle(null);
+    setProgress(null);
+    setFileCounts({});
+    setError(null);
+
+    const unlisten = await listen<FetchProgress>("fetch-progress", (event) => {
+      setProgress(event.payload);
+      if (event.payload.pr_title) {
+        setLoadingPrTitle(event.payload.pr_title);
+      }
+      if (event.payload.files_total != null) {
+        setFileCounts((prev) => ({
+          ...prev,
+          [event.payload.step]: {
+            done: event.payload.files_done ?? 0,
+            total: event.payload.files_total!,
+          },
+        }));
+      }
+    });
+    unlistenRef.current = unlisten;
+
+    try {
+      const manifest = await invoke<ReviewManifest>("fetch_pr", { prRef });
+      handleManifestLoaded(manifest);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      unlisten();
+      unlistenRef.current = null;
+      setLoading(false);
+      setProgress(null);
+    }
+  }
+
+  function handleFetchCancel() {
+    unlistenRef.current?.();
+    unlistenRef.current = null;
+    setLoading(false);
+    setProgress(null);
   }
 
   function updateActiveTab(updater: (tab: Tab) => Tab) {
@@ -131,14 +186,26 @@ function App() {
         onDrop={handleFileDrop}
       >
         <div className="empty-message">
-          <h1>Relevant Reviews</h1>
-          <p>
-            Drop a manifest JSON file here, or enter a PR URL below to start
-            a review.
-          </p>
-          <PrOpener onManifestLoaded={handleManifestLoaded} />
+          {loading ? (
+            <LoadingView
+              prRef={loadingPrRef}
+              prTitle={loadingPrTitle}
+              progress={progress}
+              fileCounts={fileCounts}
+              onCancel={handleFetchCancel}
+            />
+          ) : (
+            <>
+              <h1>Relevant Reviews</h1>
+              <p>
+                Drop a manifest JSON file here, or enter a PR URL below to start
+                a review.
+              </p>
+              <PrOpener onFetchStart={handleFetchStart} />
+            </>
+          )}
           <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "center" }}>
-            {tabs.length > 0 && (
+            {tabs.length > 0 && !loading && (
               <button
                 className="settings-button"
                 onClick={() => setShowOpener(false)}
@@ -146,12 +213,14 @@ function App() {
                 Cancel
               </button>
             )}
-            <button
-              className="settings-button"
-              onClick={() => setSettingsOpen(true)}
-            >
-              Settings
-            </button>
+            {!loading && (
+              <button
+                className="settings-button"
+                onClick={() => setSettingsOpen(true)}
+              >
+                Settings
+              </button>
+            )}
           </div>
         </div>
         <SettingsModal

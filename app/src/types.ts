@@ -44,6 +44,16 @@ export interface ReviewManifest {
   files: FileDiff[];
 }
 
+export interface FetchProgress {
+  step: number;
+  total_steps: number;
+  label: string;
+  status: "running" | "done";
+  pr_title?: string;
+  files_done?: number;
+  files_total?: number;
+}
+
 export type DiffViewMode = "split" | "unified";
 
 export type HunkSignificanceFilter = "all" | "high" | "medium" | "low";
