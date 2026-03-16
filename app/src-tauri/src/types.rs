@@ -1,6 +1,27 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum FetchStatus {
+    Running,
+    Done,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FetchProgress {
+    pub step: u8,
+    pub total_steps: u8,
+    pub label: String,
+    pub status: FetchStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_done: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_total: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Highlight {
     pub start_line: u64,
     pub end_line: u64,
