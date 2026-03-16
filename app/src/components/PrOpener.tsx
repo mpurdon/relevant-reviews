@@ -1,33 +1,16 @@
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import type { ReviewManifest } from "../types";
 
 interface PrOpenerProps {
-  onManifestLoaded: (manifest: ReviewManifest) => void;
+  onFetchStart: (prRef: string) => void;
 }
 
-export function PrOpener({ onManifestLoaded }: PrOpenerProps) {
+export function PrOpener({ onFetchStart }: PrOpenerProps) {
   const [prRef, setPrRef] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  async function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!prRef.trim()) return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const manifest = await invoke<ReviewManifest>("fetch_pr", {
-        prRef: prRef.trim(),
-      });
-      onManifestLoaded(manifest);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
+    onFetchStart(prRef.trim());
   }
 
   return (
@@ -42,17 +25,15 @@ export function PrOpener({ onManifestLoaded }: PrOpenerProps) {
           value={prRef}
           onChange={(e) => setPrRef(e.target.value)}
           placeholder="PR URL or owner/repo#123 or just #123"
-          disabled={loading}
         />
         <button
           type="submit"
           className="pr-opener-button"
-          disabled={loading || !prRef.trim()}
+          disabled={!prRef.trim()}
         >
-          {loading ? "Fetching..." : "Open PR"}
+          Open PR
         </button>
       </form>
-      {error && <div className="pr-opener-error">{error}</div>}
     </div>
   );
 }
