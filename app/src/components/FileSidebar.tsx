@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FileDiff, RiskLevel, ChangeGroup } from "../types";
+import type { FileDiff, RiskLevel, ChangeGroup, HunkSignificanceFilter } from "../types";
 
 type SidebarView = "category" | "groups" | "tree";
 
@@ -10,6 +10,26 @@ interface FileSidebarProps {
   onSelectFile: (file: FileDiff) => void;
   viewedFiles: Set<string>;
   onToggleViewed: (filePath: string) => void;
+  showHunkSignificance: boolean;
+  hunkFilter: HunkSignificanceFilter;
+  onHunkFilterChange: (filter: HunkSignificanceFilter) => void;
+}
+
+function getMaxHunkSignificance(file: FileDiff): string {
+  const scores = file.hunk_scores ?? [];
+  if (scores.length === 0) return "none";
+  if (scores.includes("high")) return "high";
+  if (scores.includes("medium")) return "medium";
+  return "low";
+}
+
+function fileMatchesHunkFilter(file: FileDiff, filter: HunkSignificanceFilter): boolean {
+  if (filter === "all") return true;
+  const max = getMaxHunkSignificance(file);
+  if (filter === "high") return max === "high";
+  if (filter === "medium") return max === "high" || max === "medium";
+  // "low" means show all (including low-only) — same as "all"
+  return true;
 }
 
 function getFileName(path: string): string {
@@ -298,6 +318,9 @@ export function FileSidebar({
   onSelectFile,
   viewedFiles,
   onToggleViewed,
+  showHunkSignificance,
+  hunkFilter,
+  onHunkFilterChange,
 }: FileSidebarProps) {
   const hasGroups = changeGroups.length > 0;
   const [view, setView] = useState<SidebarView>(hasGroups ? "groups" : "category");
@@ -357,13 +380,17 @@ export function FileSidebar({
   const [hideViewed, setHideViewed] = useState(true);
 
   const visiblePaths = useMemo(() => {
-    if (!hideViewed) return null; // null = show all
+    const needsViewedFilter = hideViewed;
+    const needsHunkFilter = showHunkSignificance && hunkFilter !== "all";
+    if (!needsViewedFilter && !needsHunkFilter) return null; // null = show all
     const set = new Set<string>();
     for (const f of files) {
-      if (!viewedFiles.has(f.path)) set.add(f.path);
+      if (needsViewedFilter && viewedFiles.has(f.path)) continue;
+      if (needsHunkFilter && !fileMatchesHunkFilter(f, hunkFilter)) continue;
+      set.add(f.path);
     }
     return set;
-  }, [files, viewedFiles, hideViewed]);
+  }, [files, viewedFiles, hideViewed, showHunkSignificance, hunkFilter]);
 
   const isVisible = (f: { path: string }) => visiblePaths === null || visiblePaths.has(f.path);
 
@@ -439,6 +466,22 @@ export function FileSidebar({
           {hideViewed ? "Show reviewed" : "Hide reviewed"}
           <span className="hide-viewed-count">{viewedCount}</span>
         </button>
+      )}
+      {showHunkSignificance && (
+        <div className="sidebar-filter-bar">
+          <span className="sidebar-filter-label">Significance:</span>
+          <div className="sidebar-filter-toggle">
+            {(["all", "high", "medium"] as HunkSignificanceFilter[]).map((level) => (
+              <button
+                key={level}
+                className={hunkFilter === level ? "active" : ""}
+                onClick={() => onHunkFilterChange(level)}
+              >
+                {level === "all" ? "All" : level === "high" ? "High" : "Med+"}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
       <nav className="file-list">
         {view === "groups" ? (

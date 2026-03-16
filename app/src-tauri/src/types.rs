@@ -26,6 +26,8 @@ pub struct FileDiff {
     pub deletions: u64,
     #[serde(default)]
     pub highlights: Vec<Highlight>,
+    #[serde(default)]
+    pub hunk_scores: Vec<String>,
 }
 
 fn default_risk_level() -> String {
