@@ -1396,6 +1396,185 @@ body {
   line-height: 1.4;
 }
 
+/* ─── Hunk Significance ────────────────────────────────────────────────── */
+.hunk-header-clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.hunk-header-clickable:hover {
+  filter: brightness(1.2);
+}
+
+.hunk-collapsed-indicator {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 10px;
+  font-weight: 400;
+}
+
+.hunk-collapsed td {
+  padding: 6px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  border-top: 1px dashed var(--border);
+  border-bottom: 1px dashed var(--border);
+  background: var(--bg-secondary);
+  user-select: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.hunk-collapsed:hover td {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.hunk-collapsed-chevron {
+  display: inline-block;
+  font-size: 9px;
+  margin-right: 6px;
+  transition: transform 0.15s ease;
+}
+
+.hunk-low-significance {
+  opacity: 0.55;
+  transition: opacity 0.2s ease;
+}
+
+.hunk-low-significance:hover {
+  opacity: 0.85;
+}
+
+.hunk-low-significance-inner {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.hunk-collapse-summary {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-left: 8px;
+}
+
+.hunk-toggle-all {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  padding: 0;
+  margin-left: 4px;
+}
+
+.hunk-toggle-all:hover {
+  text-decoration: underline;
+}
+
+/* High-significance hunk header */
+.hunk-header-high {
+  background: rgba(248, 81, 73, 0.12) !important;
+  border-left: 3px solid var(--risk-critical);
+}
+
+.hunk-significance-badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: 10px;
+  letter-spacing: 0.3px;
+  vertical-align: middle;
+}
+
+.hunk-badge-high {
+  background: var(--risk-critical-bg);
+  color: var(--risk-critical);
+}
+
+.hunk-high-summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--risk-critical);
+  font-family: var(--font-mono);
+  margin-left: 8px;
+}
+
+/* ─── Sidebar Filter Bar ──────────────────────────────────────────────── */
+.sidebar-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.sidebar-filter-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.sidebar-filter-toggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.sidebar-filter-toggle button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+
+.sidebar-filter-toggle button + button {
+  border-left: 1px solid var(--border);
+}
+
+.sidebar-filter-toggle button.active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.sidebar-filter-toggle button:hover:not(.active) {
+  color: var(--text-secondary);
+}
+
+/* ─── Significance Toggle (Header) ────────────────────────────────────── */
+.significance-toggle {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.significance-toggle:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.significance-toggle.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* ─── Scrollbar Styling ─────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 8px;

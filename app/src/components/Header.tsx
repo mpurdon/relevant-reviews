@@ -14,6 +14,10 @@ interface HeaderProps {
   viewedCount: number;
   onSettingsClick: () => void;
   manifest: ReviewManifest | null;
+  showHunkSignificance: boolean;
+  onToggleHunkSignificance: () => void;
+  showAiNotes: boolean;
+  onToggleAiNotes: () => void;
 }
 
 export function Header({
@@ -27,6 +31,10 @@ export function Header({
   viewedCount,
   onSettingsClick,
   manifest,
+  showHunkSignificance,
+  onToggleHunkSignificance,
+  showAiNotes,
+  onToggleAiNotes,
 }: HeaderProps) {
   const totalCount = manifest?.files.length ?? 0;
   const progress = totalCount > 0 ? (viewedCount / totalCount) * 100 : 0;
@@ -96,6 +104,20 @@ export function Header({
                 Unified
               </button>
             </div>
+            <button
+              className={`significance-toggle ${showHunkSignificance ? "active" : ""}`}
+              onClick={onToggleHunkSignificance}
+              title={showHunkSignificance ? "Hide hunk significance scoring" : "Show hunk significance scoring"}
+            >
+              Significance {showHunkSignificance ? "ON" : "OFF"}
+            </button>
+            <button
+              className={`significance-toggle ${showAiNotes ? "active" : ""}`}
+              onClick={onToggleAiNotes}
+              title={showAiNotes ? "Hide AI highlight notes" : "Show AI highlight notes"}
+            >
+              AI Notes {showAiNotes ? "ON" : "OFF"}
+            </button>
             <a
               className="github-link"
               href={manifest.pr_url}

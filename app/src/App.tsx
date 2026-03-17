@@ -8,13 +8,16 @@ import { PrOpener } from "./components/PrOpener";
 import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter } from "./types";
 
 function App() {
   const nextTabId = useRef(1);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<DiffViewMode>("split");
+  const [showHunkSignificance, setShowHunkSignificance] = useState(true);
+  const [showAiNotes, setShowAiNotes] = useState(true);
+  const [hunkFilter, setHunkFilter] = useState<HunkSignificanceFilter>("all");
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showOpener, setShowOpener] = useState(false);
@@ -241,6 +244,10 @@ function App() {
         viewedCount={activeTab?.viewedFiles.size ?? 0}
         onSettingsClick={() => setSettingsOpen(true)}
         manifest={activeTab?.manifest ?? null}
+        showHunkSignificance={showHunkSignificance}
+        onToggleHunkSignificance={() => setShowHunkSignificance((v) => !v)}
+        showAiNotes={showAiNotes}
+        onToggleAiNotes={() => setShowAiNotes((v) => !v)}
       />
       <SettingsModal
         open={settingsOpen}
@@ -255,10 +262,13 @@ function App() {
             onSelectFile={setSelectedFile}
             viewedFiles={activeTab.viewedFiles}
             onToggleViewed={toggleViewed}
+            showHunkSignificance={showHunkSignificance}
+            hunkFilter={hunkFilter}
+            onHunkFilterChange={setHunkFilter}
           />
           <div className="diff-pane">
             {activeTab.selectedFile ? (
-              <DiffViewer file={activeTab.selectedFile} viewMode={viewMode} />
+              <DiffViewer key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} />
             ) : activeTab.manifest.summary ? (
               <div className="pr-summary">
                 <h3>PR Summary</h3>

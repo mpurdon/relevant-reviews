@@ -22,6 +22,7 @@ export interface FileDiff {
   additions: number;
   deletions: number;
   highlights: Highlight[];
+  hunk_scores: string[];
 }
 
 export interface ChangeGroup {
@@ -54,6 +55,8 @@ export interface FetchProgress {
 }
 
 export type DiffViewMode = "split" | "unified";
+
+export type HunkSignificanceFilter = "all" | "high" | "medium" | "low";
 
 export interface Tab {
   id: string;

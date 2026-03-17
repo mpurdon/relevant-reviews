@@ -13,7 +13,7 @@ RELEVANT files include:
 
 NOT_RELEVANT files include:
 - UI components (React components that render JSX/HTML, CSS, Tailwind config, styles, layouts, pages that are purely presentational)
-- Test files (*.test.*, *.spec.*, __tests__/, test/, tests/, pact/)
+- Test files — ANY file matching these patterns is NOT_RELEVANT regardless of content: *.test.*, *.spec.*, __tests__/, test/, tests/, pact/, e2e/, **/e2e/**, *.e2e.*, playwright/*, cypress/*
 - Documentation (*.md, docs/, README)
 - IDE/editor config (.vscode/, .idea/)
 - Package manager files (package.json, pnpm-lock.yaml, yarn.lock, package-lock.json) UNLESS they add new meaningful dependencies
@@ -23,12 +23,14 @@ NOT_RELEVANT files include:
 - Auto-generated files (generated types, OpenAPI specs that are generated)
 
 IMPORTANT EDGE CASES:
-- Next.js API routes (app/api/) ARE relevant (they contain backend logic)
+- Test files are ALWAYS NOT_RELEVANT — even if they test business logic, auth, APIs, or infrastructure. The file path is the deciding factor: if it contains "test", "spec", "e2e", "__tests__", or lives under a test/e2e directory, it is NOT_RELEVANT. No exceptions.
+- Next.js API routes (app/api/) ARE relevant (they contain backend logic) — but NOT if they are test files
 - Next.js page components and layouts are NOT relevant (they are UI)
 - tRPC router files ARE relevant
 - Hook files that contain business logic (data fetching, state management with business rules) ARE relevant
 - Hook files that are purely UI state (animations, UI toggles) are NOT relevant
 - Shared utility libraries: classify based on whether they contain business logic or UI helpers
+- Page object files, test helpers, test fixtures, and test utilities are NOT_RELEVANT
 
 Respond with ONLY a valid JSON array. Each element must be an object with:
 - "path": the file path
