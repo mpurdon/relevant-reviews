@@ -639,7 +639,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes }
   // Low hunks start collapsed when significance is shown; state resets on file change
   // via the key prop on DiffViewer (see App.tsx)
   const [collapsedHunks, setCollapsedHunks] = useState<Set<number>>(() => {
-    if (!showHunkSignificance) return new Set<number>();
+    if (!showHunkSignificance || hunks.length <= 1) return new Set<number>();
     return new Set(
       hunks.filter((h) => h.significance === "low").map((h) => h.index)
     );
@@ -705,7 +705,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes }
             </button>
           </>
         )}
-        {showHunkSignificance && collapsedCount === 0 && hunks.some((h) => h.significance === "low") && (
+        {showHunkSignificance && collapsedCount === 0 && hunks.length > 1 && hunks.some((h) => h.significance === "low") && (
           <button className="hunk-toggle-all" onClick={collapseAllLow}>
             Collapse low
           </button>
