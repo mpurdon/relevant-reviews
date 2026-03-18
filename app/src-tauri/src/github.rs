@@ -1,4 +1,4 @@
-use crate::types::{PrFile, PrMetadata, ReviewRequestItem};
+use crate::types::{CommentAuthor, PrFile, PrMetadata, ReviewComment, ReviewRequestItem, ReviewThread};
 use base64::Engine;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::Client;
@@ -42,6 +42,54 @@ struct SearchPullRequest {
     merged_at: Option<String>,
 }
 
+/// Parse a single review comment from a GraphQL JSON node.
+fn parse_review_comment(c: &serde_json::Value) -> Option<ReviewComment> {
+    Some(ReviewComment {
+        id: c.get("id")?.as_str()?.to_string(),
+        body: c.get("body")?.as_str()?.to_string(),
+        author: CommentAuthor {
+            login: c
+                .pointer("/author/login")
+                .and_then(|v| v.as_str())
+                .unwrap_or("ghost")
+                .to_string(),
+            avatar_url: c
+                .pointer("/author/avatarUrl")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        },
+        created_at: c.get("createdAt")?.as_str()?.to_string(),
+        updated_at: c.get("updatedAt")?.as_str()?.to_string(),
+        url: c.get("url")?.as_str()?.to_string(),
+    })
+}
+
+/// Parse a review thread from a GraphQL JSON node.
+fn parse_review_thread(node: &serde_json::Value) -> ReviewThread {
+    let diff_hunk = node
+        .pointer("/comments/nodes/0/diffHunk")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let comments: Vec<ReviewComment> = node
+        .pointer("/comments/nodes")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(parse_review_comment).collect())
+        .unwrap_or_default();
+
+    ReviewThread {
+        id: node.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        is_resolved: node.get("isResolved").and_then(|v| v.as_bool()).unwrap_or(false),
+        is_outdated: node.get("isOutdated").and_then(|v| v.as_bool()).unwrap_or(false),
+        path: node.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        line: node.get("line").and_then(|v| v.as_u64()),
+        original_line: node.get("originalLine").and_then(|v| v.as_u64()),
+        diff_hunk,
+        comments,
+    }
+}
 
 impl GithubClient {
     pub fn new(token: String) -> Self {
@@ -49,6 +97,37 @@ impl GithubClient {
             client: Client::new(),
             token,
         }
+    }
+
+    /// Send a GraphQL request and return the parsed JSON response.
+    /// Handles POST, headers, status check, and GraphQL-level error checking.
+    async fn graphql_request(&self, body: serde_json::Value) -> Result<serde_json::Value, String> {
+        let resp = self
+            .client
+            .post("https://api.github.com/graphql")
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .header(USER_AGENT, "relevant-reviews")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("GraphQL request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("GraphQL error ({}): {}", status, body));
+        }
+
+        let result: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse GraphQL response: {}", e))?;
+
+        if let Some(errors) = result.get("errors") {
+            return Err(format!("GraphQL errors: {}", errors));
+        }
+
+        Ok(result)
     }
 
     pub async fn get_pr_metadata(
@@ -293,11 +372,11 @@ impl GithubClient {
                 }
             }
 
-            let (owner, repo) = parse_owner_repo(&item.html_url)?;
+            let parsed = crate::pr_parser::parse_pr_ref(&item.html_url)?;
 
             items.push(ReviewRequestItem {
-                owner,
-                repo,
+                owner: parsed.owner,
+                repo: parsed.repo,
                 number: item.number,
                 title: item.title,
                 html_url: item.html_url,
@@ -362,26 +441,7 @@ impl GithubClient {
         let query = format!("{{ {} }}", query_parts.join("\n"));
         let body = serde_json::json!({ "query": query });
 
-        let resp = self
-            .client
-            .post("https://api.github.com/graphql")
-            .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, "relevant-reviews")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("GraphQL request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("GraphQL error ({}): {}", status, body));
-        }
-
-        let result: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse GraphQL response: {}", e))?;
+        let result = self.graphql_request(body).await?;
 
         let data = match result.get("data") {
             Some(d) => d,
@@ -449,16 +509,413 @@ impl GithubClient {
 
         Ok(())
     }
-}
 
-fn parse_owner_repo(html_url: &str) -> Result<(String, String), String> {
-    // https://github.com/owner/repo/pull/123
-    let parts: Vec<&str> = html_url.split('/').collect();
-    if parts.len() >= 5 {
-        let owner = parts[parts.len() - 4].to_string();
-        let repo = parts[parts.len() - 3].to_string();
-        Ok((owner, repo))
-    } else {
-        Err(format!("Could not parse owner/repo from URL: {}", html_url))
+    pub async fn get_review_threads(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<Vec<ReviewThread>, String> {
+        let mut all_threads = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let after_clause = match &cursor {
+                Some(c) => format!(", after: \"{}\"", c),
+                None => String::new(),
+            };
+
+            let query = format!(
+                r#"{{
+                    repository(owner: "{}", name: "{}") {{
+                        pullRequest(number: {}) {{
+                            reviewThreads(first: 100{}) {{
+                                pageInfo {{ hasNextPage endCursor }}
+                                nodes {{
+                                    id
+                                    isResolved
+                                    isOutdated
+                                    path
+                                    line
+                                    originalLine
+                                    diffSide
+                                    comments(first: 100) {{
+                                        nodes {{
+                                            id
+                                            body
+                                            author {{ login avatarUrl }}
+                                            createdAt
+                                            updatedAt
+                                            url
+                                            diffHunk
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}"#,
+                owner, repo, pr_number, after_clause
+            );
+
+            let body = serde_json::json!({ "query": query });
+            let result = self.graphql_request(body).await?;
+
+            let threads_data = result
+                .pointer("/data/repository/pullRequest/reviewThreads")
+                .ok_or("Missing reviewThreads in response")?;
+
+            let nodes = threads_data
+                .pointer("/nodes")
+                .and_then(|v| v.as_array())
+                .ok_or("Missing nodes in reviewThreads")?;
+
+            for node in nodes {
+                all_threads.push(parse_review_thread(node));
+            }
+
+            let has_next = threads_data
+                .pointer("/pageInfo/hasNextPage")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if has_next {
+                cursor = threads_data
+                    .pointer("/pageInfo/endCursor")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+
+        Ok(all_threads)
+    }
+
+    pub async fn reply_to_review_thread(
+        &self,
+        pull_request_id: &str,
+        comment_node_id: &str,
+        body: &str,
+    ) -> Result<ReviewComment, String> {
+        let query = r#"mutation($prId: ID!, $inReplyTo: ID!, $body: String!) {
+            addPullRequestReviewComment(input: {
+                pullRequestId: $prId,
+                inReplyTo: $inReplyTo,
+                body: $body
+            }) {
+                comment {
+                    id
+                    body
+                    author { login avatarUrl }
+                    createdAt
+                    updatedAt
+                    url
+                }
+            }
+        }"#;
+
+        let payload = serde_json::json!({
+            "query": query,
+            "variables": {
+                "prId": pull_request_id,
+                "inReplyTo": comment_node_id,
+                "body": body,
+            }
+        });
+
+        let result = self.graphql_request(payload).await?;
+
+        let c = result
+            .pointer("/data/addPullRequestReviewComment/comment")
+            .ok_or("Missing comment in response")?;
+
+        parse_review_comment(c).ok_or_else(|| "Failed to parse comment from response".to_string())
+    }
+
+    pub async fn resolve_review_thread(
+        &self,
+        thread_id: &str,
+        resolve: bool,
+    ) -> Result<bool, String> {
+        let mutation_name = if resolve {
+            "resolveReviewThread"
+        } else {
+            "unresolveReviewThread"
+        };
+
+        let query = format!(
+            r#"mutation($threadId: ID!) {{
+                {}(input: {{ threadId: $threadId }}) {{
+                    thread {{ isResolved }}
+                }}
+            }}"#,
+            mutation_name
+        );
+
+        let payload = serde_json::json!({
+            "query": query,
+            "variables": { "threadId": thread_id }
+        });
+
+        let result = self.graphql_request(payload).await?;
+
+        let is_resolved = result
+            .pointer(&format!("/data/{}/thread/isResolved", mutation_name))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(resolve);
+
+        Ok(is_resolved)
+    }
+
+    pub async fn update_review_comment(
+        &self,
+        comment_node_id: &str,
+        body: &str,
+    ) -> Result<ReviewComment, String> {
+        let query = r#"mutation($commentId: ID!, $body: String!) {
+            updatePullRequestReviewComment(input: {
+                pullRequestReviewCommentId: $commentId,
+                body: $body
+            }) {
+                pullRequestReviewComment {
+                    id body author { login avatarUrl } createdAt updatedAt url
+                }
+            }
+        }"#;
+
+        let payload = serde_json::json!({
+            "query": query,
+            "variables": {
+                "commentId": comment_node_id,
+                "body": body,
+            }
+        });
+
+        let result = self.graphql_request(payload).await?;
+
+        let c = result
+            .pointer("/data/updatePullRequestReviewComment/pullRequestReviewComment")
+            .ok_or("Missing comment in response")?;
+
+        parse_review_comment(c).ok_or_else(|| "Failed to parse comment from response".to_string())
+    }
+
+    pub async fn create_review_thread(
+        &self,
+        pull_request_id: &str,
+        body: &str,
+        path: &str,
+        line: u64,
+        side: &str,
+        start_line: Option<u64>,
+        start_side: Option<&str>,
+    ) -> Result<ReviewThread, String> {
+        // Build mutation dynamically based on whether start_line is provided
+        let (vars_decl, input_extra) = if start_line.is_some() {
+            (
+                ", $startLine: Int!, $startSide: DiffSide!",
+                "\n                startLine: $startLine\n                startSide: $startSide",
+            )
+        } else {
+            ("", "")
+        };
+
+        let query = format!(
+            r#"mutation($prId: ID!, $body: String!, $path: String!, $line: Int!, $side: DiffSide!{vars_decl}) {{
+            addPullRequestReviewThread(input: {{
+                pullRequestId: $prId
+                body: $body
+                path: $path
+                line: $line
+                side: $side{input_extra}
+            }}) {{"#
+        );
+
+        let query = format!(
+            r#"{}
+                thread {{
+                    id
+                    isResolved
+                    isOutdated
+                    path
+                    line
+                    originalLine
+                    comments(first: 100) {{
+                        nodes {{
+                            id body author {{ login avatarUrl }} createdAt updatedAt url diffHunk
+                        }}
+                    }}
+                }}
+            }}
+        }}"#,
+            query
+        );
+
+        let mut variables = serde_json::json!({
+            "prId": pull_request_id,
+            "body": body,
+            "path": path,
+            "line": line,
+            "side": side,
+        });
+
+        if let (Some(sl), Some(ss)) = (start_line, start_side) {
+            variables["startLine"] = serde_json::json!(sl);
+            variables["startSide"] = serde_json::json!(ss);
+        }
+
+        let payload = serde_json::json!({
+            "query": query,
+            "variables": variables,
+        });
+
+        let result = self.graphql_request(payload).await?;
+
+        let thread = result
+            .pointer("/data/addPullRequestReviewThread/thread")
+            .ok_or("Missing thread in response")?;
+
+        Ok(parse_review_thread(thread))
+    }
+
+    /// Submit a pending review, or create a new review with the given event.
+    /// `event` must be one of: APPROVE, REQUEST_CHANGES, COMMENT
+    pub async fn submit_review(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        event: &str,
+        body: &str,
+    ) -> Result<String, String> {
+        // Find the viewer's pending review using the viewer query
+        let query = format!(
+            r#"{{
+                viewer {{ login }}
+                repository(owner: "{}", name: "{}") {{
+                    pullRequest(number: {}) {{
+                        id
+                        reviews(last: 10, states: PENDING) {{
+                            nodes {{ id author {{ login }} }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            owner, repo, pr_number
+        );
+
+        let result = self.graphql_request(serde_json::json!({ "query": query })).await?;
+
+        let viewer_login = result
+            .pointer("/data/viewer/login")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let pr_id = result
+            .pointer("/data/repository/pullRequest/id")
+            .and_then(|v| v.as_str())
+            .ok_or("Could not find PR node ID")?
+            .to_string();
+
+        let pending_review_id = result
+            .pointer("/data/repository/pullRequest/reviews/nodes")
+            .and_then(|v| v.as_array())
+            .and_then(|nodes| {
+                nodes.iter().find(|n| {
+                    n.pointer("/author/login")
+                        .and_then(|l| l.as_str())
+                        .map(|l| l.eq_ignore_ascii_case(viewer_login))
+                        .unwrap_or(false)
+                })
+            })
+            .and_then(|n| n.get("id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        if let Some(review_id) = pending_review_id {
+            // Submit existing pending review
+            let mutation = r#"mutation($reviewId: ID!, $event: PullRequestReviewEvent!, $body: String) {
+                submitPullRequestReview(input: {
+                    pullRequestReviewId: $reviewId
+                    event: $event
+                    body: $body
+                }) {
+                    pullRequestReview { state }
+                }
+            }"#;
+
+            let payload = serde_json::json!({
+                "query": mutation,
+                "variables": {
+                    "reviewId": review_id,
+                    "event": event,
+                    "body": body,
+                }
+            });
+
+            let result = self.graphql_request(payload).await?;
+            let state = result
+                .pointer("/data/submitPullRequestReview/pullRequestReview/state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("UNKNOWN")
+                .to_string();
+
+            Ok(state)
+        } else {
+            // No pending review — create a new one directly
+            let mutation = r#"mutation($prId: ID!, $event: PullRequestReviewEvent!, $body: String) {
+                addPullRequestReview(input: {
+                    pullRequestId: $prId
+                    event: $event
+                    body: $body
+                }) {
+                    pullRequestReview { state }
+                }
+            }"#;
+
+            let payload = serde_json::json!({
+                "query": mutation,
+                "variables": {
+                    "prId": pr_id,
+                    "event": event,
+                    "body": body,
+                }
+            });
+
+            let result = self.graphql_request(payload).await?;
+            let state = result
+                .pointer("/data/addPullRequestReview/pullRequestReview/state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("UNKNOWN")
+                .to_string();
+
+            Ok(state)
+        }
+    }
+
+    pub async fn get_pull_request_id(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<String, String> {
+        let query = format!(
+            r#"{{
+                repository(owner: "{}", name: "{}") {{
+                    pullRequest(number: {}) {{ id }}
+                }}
+            }}"#,
+            owner, repo, pr_number
+        );
+
+        let body = serde_json::json!({ "query": query });
+        let result = self.graphql_request(body).await?;
+
+        result
+            .pointer("/data/repository/pullRequest/id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Could not find PR node ID".to_string())
     }
 }

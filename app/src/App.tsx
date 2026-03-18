@@ -2,14 +2,15 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FileSidebar } from "./components/FileSidebar";
-import { DiffViewer } from "./components/DiffViewer";
+import { DiffViewer, detectLanguage } from "./components/DiffViewer";
+import { CommentsViewer } from "./components/CommentsViewer";
 import { Header } from "./components/Header";
 import { PrOpener } from "./components/PrOpener";
 import { ReviewRequestList } from "./components/ReviewRequestList";
 import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter } from "./types";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment } from "./types";
 
 function App() {
   const nextTabId = useRef(1);
@@ -31,11 +32,15 @@ function App() {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
   function createTab(manifest: ReviewManifest): Tab {
+    const hasGroups = (manifest.change_groups ?? []).length > 0;
     return {
       id: String(nextTabId.current++),
       manifest,
       selectedFile: manifest.files.length > 0 ? manifest.files[0] : null,
       viewedFiles: new Set(),
+      commentThreads: { status: "idle" },
+      selectedCommentFile: null,
+      sidebarView: hasGroups ? "groups" : "category",
     };
   }
 
@@ -132,6 +137,246 @@ function App() {
       }
       return { ...t, viewedFiles: next };
     });
+  }
+
+  function handleViewChange(view: SidebarView) {
+    updateActiveTab((t) => ({ ...t, sidebarView: view }));
+    if (view === "comments") {
+      handleRequestComments();
+    }
+  }
+
+  async function handleRequestComments() {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab || tab.commentThreads.status === "loading" || tab.commentThreads.status === "loaded") return;
+
+    updateActiveTab((t) => ({ ...t, commentThreads: { status: "loading" } }));
+    try {
+      const threads = await invoke<ReviewThread[]>("fetch_review_comments", {
+        prUrl: tab.manifest.pr_url,
+      });
+      // Set first file with comments as selected if none selected
+      const firstFile = threads.length > 0 ? threads[0].path : null;
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.id === activeTabId
+            ? {
+                ...t,
+                commentThreads: { status: "loaded", threads },
+                selectedCommentFile: t.selectedCommentFile ?? firstFile,
+              }
+            : t
+        )
+      );
+    } catch (err) {
+      updateActiveTab((t) => ({
+        ...t,
+        commentThreads: { status: "error", message: String(err) },
+      }));
+    }
+  }
+
+  function handleSelectCommentFile(path: string) {
+    updateActiveTab((t) => ({ ...t, selectedCommentFile: path }));
+  }
+
+  async function handleReply(threadId: string, commentId: string, body: string) {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab || tab.commentThreads.status !== "loaded") return;
+
+    // Optimistic update: add a placeholder comment
+    const optimisticComment = {
+      id: `optimistic-${Date.now()}`,
+      body,
+      author: { login: "you", avatar_url: "" },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      url: "",
+    };
+
+    const prevThreads = tab.commentThreads.threads;
+    const optimisticThreads = prevThreads.map((t) =>
+      t.id === threadId
+        ? { ...t, comments: [...t.comments, optimisticComment] }
+        : t
+    );
+    updateActiveTab((t) => ({
+      ...t,
+      commentThreads: { status: "loaded", threads: optimisticThreads },
+    }));
+
+    try {
+      const newComment = await invoke<ReviewComment>("reply_to_thread", {
+        prUrl: tab.manifest.pr_url,
+        commentId,
+        body,
+      });
+
+      // Replace optimistic comment with real one
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id !== activeTabId || t.commentThreads.status !== "loaded") return t;
+          return {
+            ...t,
+            commentThreads: {
+              status: "loaded",
+              threads: t.commentThreads.threads.map((th) =>
+                th.id === threadId
+                  ? {
+                      ...th,
+                      comments: th.comments.map((c) =>
+                        c.id === optimisticComment.id ? newComment : c
+                      ),
+                    }
+                  : th
+              ),
+            },
+          };
+        })
+      );
+    } catch {
+      // Revert on error
+      updateActiveTab((t) => ({
+        ...t,
+        commentThreads: { status: "loaded", threads: prevThreads },
+      }));
+    }
+  }
+
+  async function handleToggleResolved(threadId: string, resolve: boolean) {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab || tab.commentThreads.status !== "loaded") return;
+
+    const prevThreads = tab.commentThreads.threads;
+
+    // Optimistic update
+    const optimisticThreads = prevThreads.map((t) =>
+      t.id === threadId ? { ...t, is_resolved: resolve } : t
+    );
+    updateActiveTab((t) => ({
+      ...t,
+      commentThreads: { status: "loaded", threads: optimisticThreads },
+    }));
+
+    try {
+      await invoke<boolean>("toggle_thread_resolved", { threadId, resolve });
+    } catch {
+      // Revert on error
+      updateActiveTab((t) => ({
+        ...t,
+        commentThreads: { status: "loaded", threads: prevThreads },
+      }));
+    }
+  }
+
+  async function handleEditComment(commentId: string, body: string) {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab || tab.commentThreads.status !== "loaded") return;
+
+    const prevThreads = tab.commentThreads.threads;
+
+    // Optimistic update
+    const optimisticThreads = prevThreads.map((t) => ({
+      ...t,
+      comments: t.comments.map((c) =>
+        c.id === commentId ? { ...c, body } : c
+      ),
+    }));
+    updateActiveTab((t) => ({
+      ...t,
+      commentThreads: { status: "loaded" as const, threads: optimisticThreads },
+    }));
+
+    try {
+      const updated = await invoke<ReviewComment>("update_review_comment", {
+        commentId,
+        body,
+      });
+
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.id !== activeTabId || t.commentThreads.status !== "loaded") return t;
+          return {
+            ...t,
+            commentThreads: {
+              status: "loaded" as const,
+              threads: t.commentThreads.threads.map((th) => ({
+                ...th,
+                comments: th.comments.map((c) =>
+                  c.id === commentId ? updated : c
+                ),
+              })),
+            },
+          };
+        })
+      );
+    } catch {
+      updateActiveTab((t) => ({
+        ...t,
+        commentThreads: { status: "loaded" as const, threads: prevThreads },
+      }));
+    }
+  }
+
+  async function handleSubmitReview(event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string) {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab) return;
+
+    try {
+      await invoke<string>("submit_review", {
+        prUrl: tab.manifest.pr_url,
+        event,
+        body,
+      });
+      // Re-fetch threads to update resolved states
+      if (tab.commentThreads.status === "loaded") {
+        const threads = await invoke<ReviewThread[]>("fetch_review_comments", {
+          prUrl: tab.manifest.pr_url,
+        });
+        updateActiveTab((t) => ({
+          ...t,
+          commentThreads: { status: "loaded" as const, threads },
+        }));
+      }
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function handleCreateComment(path: string, endLine: number, side: "LEFT" | "RIGHT", body: string, startLine?: number, startSide?: "LEFT" | "RIGHT") {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab) return;
+
+    try {
+      const newThread = await invoke<ReviewThread>("create_review_comment", {
+        prUrl: tab.manifest.pr_url,
+        body,
+        path,
+        line: endLine,
+        side,
+        startLine: startLine ?? null,
+        startSide: startSide ?? null,
+      });
+
+      // Add the new thread to the comment threads state
+      updateActiveTab((t) => {
+        if (t.commentThreads.status === "loaded") {
+          return {
+            ...t,
+            commentThreads: {
+              status: "loaded",
+              threads: [...t.commentThreads.threads, newThread],
+            },
+          };
+        }
+        return {
+          ...t,
+          commentThreads: { status: "loaded", threads: [newThread] },
+        };
+      });
+    } catch (err) {
+      setError(String(err));
+    }
   }
 
   function closeTab(tabId: string) {
@@ -241,6 +486,8 @@ function App() {
         onToggleHunkSignificance={() => setShowHunkSignificance((v) => !v)}
         showAiNotes={showAiNotes}
         onToggleAiNotes={() => setShowAiNotes((v) => !v)}
+        commentThreads={activeTab?.commentThreads}
+        onSubmitReview={activeTab ? handleSubmitReview : undefined}
       />
       <SettingsModal
         open={settingsOpen}
@@ -258,10 +505,34 @@ function App() {
             showHunkSignificance={showHunkSignificance}
             hunkFilter={hunkFilter}
             onHunkFilterChange={setHunkFilter}
+            sidebarView={activeTab.sidebarView}
+            onViewChange={handleViewChange}
+            commentThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : []}
+            selectedCommentFile={activeTab.selectedCommentFile}
+            onSelectCommentFile={handleSelectCommentFile}
           />
           <div className="diff-pane">
-            {activeTab.selectedFile ? (
-              <DiffViewer key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} />
+            {activeTab.sidebarView === "comments" ? (
+              activeTab.commentThreads.status === "loading" ? (
+                <div className="no-file-selected">Loading review threads...</div>
+              ) : activeTab.commentThreads.status === "error" ? (
+                <div className="no-file-selected" style={{ color: "var(--diff-remove-text)" }}>
+                  {activeTab.commentThreads.message}
+                </div>
+              ) : activeTab.commentThreads.status === "loaded" ? (
+                <CommentsViewer
+                  threads={activeTab.commentThreads.threads}
+                  selectedFile={activeTab.selectedCommentFile}
+                  onReply={handleReply}
+                  onToggleResolved={handleToggleResolved}
+                  onEditComment={handleEditComment}
+                  lang={activeTab.selectedCommentFile ? detectLanguage(activeTab.selectedCommentFile) : undefined}
+                />
+              ) : (
+                <div className="no-file-selected">Switch to Comments tab to load threads</div>
+              )
+            ) : activeTab.selectedFile ? (
+              <DiffViewer key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} onCreateComment={handleCreateComment} onEditComment={handleEditComment} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} />
             ) : activeTab.manifest.summary ? (
               <div className="pr-summary">
                 <h3>PR Summary</h3>

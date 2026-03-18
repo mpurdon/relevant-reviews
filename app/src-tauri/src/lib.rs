@@ -26,6 +26,13 @@ pub fn run() {
             commands::get_initial_manifest_path,
             commands::fetch_pr,
             commands::fetch_review_requests,
+            commands::fetch_review_comments,
+            commands::reply_to_thread,
+            commands::toggle_thread_resolved,
+            commands::submit_review,
+            commands::generate_review_body,
+            commands::update_review_comment,
+            commands::create_review_comment,
             commands::get_settings,
             commands::save_settings,
         ])

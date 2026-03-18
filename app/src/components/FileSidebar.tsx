@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FileDiff, RiskLevel, ChangeGroup, HunkSignificanceFilter } from "../types";
-
-type SidebarView = "category" | "groups" | "tree";
+import type { FileDiff, RiskLevel, ChangeGroup, HunkSignificanceFilter, SidebarView, ReviewThread } from "../types";
 
 interface FileSidebarProps {
   files: FileDiff[];
@@ -13,6 +11,11 @@ interface FileSidebarProps {
   showHunkSignificance: boolean;
   hunkFilter: HunkSignificanceFilter;
   onHunkFilterChange: (filter: HunkSignificanceFilter) => void;
+  sidebarView: SidebarView;
+  onViewChange: (view: SidebarView) => void;
+  commentThreads: ReviewThread[];
+  selectedCommentFile: string | null;
+  onSelectCommentFile: (path: string) => void;
 }
 
 function getMaxHunkSignificance(file: FileDiff): string {
@@ -309,6 +312,72 @@ function TreeFolder({
   );
 }
 
+/* ─── Comment file list ──────────────────────────────────────────────────── */
+
+function CommentFileList({
+  threads,
+  selectedFile,
+  onSelectFile,
+}: {
+  threads: ReviewThread[];
+  selectedFile: string | null;
+  onSelectFile: (path: string) => void;
+}) {
+  const fileMap = useMemo(() => {
+    const map = new Map<string, { total: number; unresolved: number }>();
+    for (const t of threads) {
+      const entry = map.get(t.path) ?? { total: 0, unresolved: 0 };
+      entry.total++;
+      if (!t.is_resolved) entry.unresolved++;
+      map.set(t.path, entry);
+    }
+    // Sort: files with unresolved threads first, then alphabetical
+    const sorted = [...map.entries()].sort((a, b) => {
+      if (a[1].unresolved > 0 && b[1].unresolved === 0) return -1;
+      if (a[1].unresolved === 0 && b[1].unresolved > 0) return 1;
+      return a[0].localeCompare(b[0]);
+    });
+    return sorted;
+  }, [threads]);
+
+  if (threads.length === 0) {
+    return (
+      <div className="comment-file-list-empty">
+        No review threads on this PR
+      </div>
+    );
+  }
+
+  return (
+    <div className="comment-file-list">
+      {fileMap.map(([path, counts]) => {
+        const fileName = getFileName(path);
+        const dirHint = path.split("/").slice(-2, -1)[0] || "";
+        return (
+          <button
+            key={path}
+            className={`comment-file-item ${selectedFile === path ? "selected" : ""}`}
+            onClick={() => onSelectFile(path)}
+            title={path}
+          >
+            <span className="file-name">{fileName}</span>
+            <span className="file-path-hint">{dirHint}</span>
+            {counts.unresolved > 0 ? (
+              <span className="unresolved-badge">
+                {counts.unresolved}
+              </span>
+            ) : (
+              <span className="comment-count-badge">
+                {counts.total}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ─── Main component ────────────────────────────────────────────────────── */
 
 export function FileSidebar({
@@ -321,13 +390,16 @@ export function FileSidebar({
   showHunkSignificance,
   hunkFilter,
   onHunkFilterChange,
+  sidebarView: view,
+  onViewChange: setView,
+  commentThreads,
+  selectedCommentFile,
+  onSelectCommentFile,
 }: FileSidebarProps) {
   const hasGroups = changeGroups.length > 0;
-  const [view, setView] = useState<SidebarView>(hasGroups ? "groups" : "category");
   const prevHasGroups = useRef(hasGroups);
 
   useEffect(() => {
-    // Only auto-switch when groups first arrive, not on every tab switch
     if (hasGroups && !prevHasGroups.current) {
       setView("groups");
     }
@@ -429,34 +501,44 @@ export function FileSidebar({
   return (
     <aside className="file-sidebar">
       <div className="sidebar-header">
-        <span>
-          Files ({viewedCount}/{totalCount} viewed)
-        </span>
-        <div className="sidebar-view-toggle">
-          {hasGroups && (
+        <div className="sidebar-header-top">
+          <span className="sidebar-title">Files</span>
+          <div className="sidebar-view-toggle">
+            {hasGroups && (
+              <button
+                className={view === "groups" ? "active" : ""}
+                onClick={() => setView("groups")}
+                title="Group by logical change"
+              >
+                Groups
+              </button>
+            )}
             <button
-              className={view === "groups" ? "active" : ""}
-              onClick={() => setView("groups")}
-              title="Group by logical change"
+              className={view === "comments" ? "active" : ""}
+              onClick={() => setView("comments")}
+              title="Review comments"
             >
-              Groups
+              Comments
             </button>
-          )}
-          <button
-            className={view === "category" ? "active" : ""}
-            onClick={() => setView("category")}
-            title="Group by category"
-          >
-            Category
-          </button>
-          <button
-            className={view === "tree" ? "active" : ""}
-            onClick={() => setView("tree")}
-            title="File tree"
-          >
-            Tree
-          </button>
+            <button
+              className={view === "category" ? "active" : ""}
+              onClick={() => setView("category")}
+              title="Group by category"
+            >
+              Category
+            </button>
+            <button
+              className={view === "tree" ? "active" : ""}
+              onClick={() => setView("tree")}
+              title="File tree"
+            >
+              Tree
+            </button>
+          </div>
         </div>
+        <span className="sidebar-file-count">
+          {viewedCount}/{totalCount} viewed
+        </span>
       </div>
       {viewedCount > 0 && (
         <button
@@ -484,7 +566,13 @@ export function FileSidebar({
         </div>
       )}
       <nav className="file-list">
-        {view === "groups" ? (
+        {view === "comments" ? (
+          <CommentFileList
+            threads={commentThreads}
+            selectedFile={selectedCommentFile}
+            onSelectFile={onSelectCommentFile}
+          />
+        ) : view === "groups" ? (
           <>
             {changeGroups.map((group, idx) => {
               const groupKey = `group:${idx}`;
