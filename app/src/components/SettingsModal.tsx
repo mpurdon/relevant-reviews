@@ -1,11 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-
-interface Settings {
-  model: string;
-  github_token: string;
-  aws_profile: string;
-}
+import type { Settings } from "../types";
 
 interface SettingsModalProps {
   open: boolean;
@@ -16,6 +11,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [model, setModel] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [awsProfile, setAwsProfile] = useState("");
+  const [currentSettings, setCurrentSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -25,6 +21,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setModel(s.model);
         setGithubToken(s.github_token || "");
         setAwsProfile(s.aws_profile || "");
+        setCurrentSettings(s);
       });
       setSaved(false);
     }
@@ -39,6 +36,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           model: model.trim(),
           github_token: githubToken.trim(),
           aws_profile: awsProfile.trim(),
+          filter_older: currentSettings?.filter_older ?? true,
+          filter_team: currentSettings?.filter_team ?? true,
         },
       });
       setSaved(true);

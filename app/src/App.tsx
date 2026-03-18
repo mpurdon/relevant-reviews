@@ -5,6 +5,7 @@ import { FileSidebar } from "./components/FileSidebar";
 import { DiffViewer } from "./components/DiffViewer";
 import { Header } from "./components/Header";
 import { PrOpener } from "./components/PrOpener";
+import { ReviewRequestList } from "./components/ReviewRequestList";
 import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
@@ -201,27 +202,19 @@ function App() {
                 Drop a manifest JSON file here, or enter a PR URL below to start
                 a review.
               </p>
-              <PrOpener onFetchStart={handleFetchStart} />
+              <PrOpener onFetchStart={handleFetchStart} onSettingsClick={() => setSettingsOpen(true)} />
+              <ReviewRequestList onSelectPr={handleFetchStart} />
             </>
           )}
-          <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "center" }}>
-            {tabs.length > 0 && !loading && (
-              <button
-                className="settings-button"
-                onClick={() => setShowOpener(false)}
-              >
-                Cancel
-              </button>
-            )}
-            {!loading && (
-              <button
-                className="settings-button"
-                onClick={() => setSettingsOpen(true)}
-              >
-                Settings
-              </button>
-            )}
-          </div>
+          {tabs.length > 0 && !loading && (
+            <button
+              className="settings-button"
+              onClick={() => setShowOpener(false)}
+              style={{ marginTop: 16 }}
+            >
+              Cancel
+            </button>
+          )}
         </div>
         <SettingsModal
           open={settingsOpen}
