@@ -25,6 +25,7 @@ pub fn run() {
             commands::load_manifest,
             commands::get_initial_manifest_path,
             commands::fetch_pr,
+            commands::fetch_review_requests,
             commands::get_settings,
             commands::save_settings,
         ])

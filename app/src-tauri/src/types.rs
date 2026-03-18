@@ -85,6 +85,14 @@ pub struct Settings {
     pub github_token: String,
     #[serde(default)]
     pub aws_profile: String,
+    #[serde(default = "default_true")]
+    pub filter_older: bool,
+    #[serde(default = "default_true")]
+    pub filter_team: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,4 +146,20 @@ pub struct PrFile {
     pub additions: u64,
     #[serde(default)]
     pub deletions: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReviewRequestItem {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+    pub title: String,
+    pub html_url: String,
+    pub author: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub draft: bool,
+    pub direct_request: bool,
+    pub my_review_status: String,
+    pub unresolved_thread_count: u32,
 }
