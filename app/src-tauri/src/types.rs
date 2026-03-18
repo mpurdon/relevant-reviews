@@ -149,6 +149,34 @@ pub struct PrFile {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CommentAuthor {
+    pub login: String,
+    pub avatar_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReviewComment {
+    pub id: String,
+    pub body: String,
+    pub author: CommentAuthor,
+    pub created_at: String,
+    pub updated_at: String,
+    pub url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReviewThread {
+    pub id: String,
+    pub is_resolved: bool,
+    pub is_outdated: bool,
+    pub path: String,
+    pub line: Option<u64>,
+    pub original_line: Option<u64>,
+    pub diff_hunk: String,
+    pub comments: Vec<ReviewComment>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReviewRequestItem {
     pub owner: String,
     pub repo: String,
