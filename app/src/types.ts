@@ -54,6 +54,39 @@ export interface FetchProgress {
   files_total?: number;
 }
 
+export interface CommentAuthor {
+  login: string;
+  avatar_url: string;
+}
+
+export interface ReviewComment {
+  id: string;
+  body: string;
+  author: CommentAuthor;
+  created_at: string;
+  updated_at: string;
+  url: string;
+}
+
+export interface ReviewThread {
+  id: string;
+  is_resolved: boolean;
+  is_outdated: boolean;
+  path: string;
+  line: number | null;
+  original_line: number | null;
+  diff_hunk: string;
+  comments: ReviewComment[];
+}
+
+export type CommentThreadsState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "loaded"; threads: ReviewThread[] }
+  | { status: "error"; message: string };
+
+export type SidebarView = "groups" | "comments" | "category" | "tree";
+
 export type DiffViewMode = "split" | "unified";
 
 export type HunkSignificanceFilter = "all" | "high" | "medium" | "low";
@@ -63,6 +96,9 @@ export interface Tab {
   manifest: ReviewManifest;
   selectedFile: FileDiff | null;
   viewedFiles: Set<string>;
+  commentThreads: CommentThreadsState;
+  selectedCommentFile: string | null;
+  sidebarView: SidebarView;
 }
 
 export interface Settings {

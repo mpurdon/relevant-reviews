@@ -1,7 +1,8 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
-import type { FileDiff, DiffViewMode, Highlight } from "../types";
+import type { FileDiff, DiffViewMode, Highlight, ReviewThread, ReviewComment } from "../types";
+import { timeAgo } from "../utils";
 
 const extToLang: Record<string, string> = {
   ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
@@ -15,7 +16,7 @@ const extToLang: Record<string, string> = {
   tf: "hcl", hcl: "hcl", graphql: "graphql", gql: "graphql",
 };
 
-function detectLanguage(filePath: string): string | undefined {
+export function detectLanguage(filePath: string): string | undefined {
   const name = filePath.split("/").pop()?.toLowerCase() ?? "";
   if (name === "dockerfile") return "dockerfile";
   const ext = name.split(".").pop() ?? "";
@@ -86,11 +87,296 @@ function splitHtmlByLines(html: string): string[] {
   return lines;
 }
 
+interface CommentingOn {
+  startLine: number;
+  endLine: number;
+  side: "LEFT" | "RIGHT";
+}
+
 interface DiffViewerProps {
   file: FileDiff;
   viewMode: DiffViewMode;
   showHunkSignificance: boolean;
   showAiNotes: boolean;
+  onCreateComment?: (path: string, endLine: number, side: "LEFT" | "RIGHT", body: string, startLine?: number, startSide?: "LEFT" | "RIGHT") => Promise<void>;
+  onEditComment?: (commentId: string, body: string) => void;
+  reviewThreads?: ReviewThread[];
+}
+
+export const CommentBodyRendered = memo(function CommentBodyRendered({ body, lang }: { body: string; lang?: string }) {
+  // Split body into text and suggestion blocks
+  const parts = body.split(/(```suggestion\n[\s\S]*?\n```)/g);
+
+  if (parts.length === 1) {
+    // No suggestion blocks — render as plain pre-wrapped text
+    return <div className="comment-body">{body}</div>;
+  }
+
+  return (
+    <div className="comment-body">
+      {parts.map((part, i) => {
+        const match = part.match(/^```suggestion\n([\s\S]*?)\n```$/);
+        if (match) {
+          const suggestionCode = match[1];
+          const html = highlightCode(suggestionCode, lang);
+          return (
+            <div key={i} className="comment-suggestion-block">
+              <div className="suggestion-preview-header">
+                <span className="suggestion-preview-label">Suggestion</span>
+              </div>
+              <pre className="inline-comment-code suggestion-code-add" dangerouslySetInnerHTML={{ __html: html }} />
+            </div>
+          );
+        }
+        if (!part.trim()) return null;
+        return <span key={i}>{part}</span>;
+      })}
+    </div>
+  );
+});
+
+function highlightCode(code: string, lang: string | undefined): string {
+  if (!code) return "";
+  if (lang) {
+    try { return hljs.highlight(code, { language: lang }).value; } catch { /* fall through */ }
+  }
+  return escapeHtml(code);
+}
+
+function InlineCommentForm({
+  onSubmit,
+  onCancel,
+  colSpan,
+  codeSnippet,
+  lineRange,
+  lang,
+}: {
+  onSubmit: (body: string) => void;
+  onCancel: () => void;
+  colSpan: number;
+  codeSnippet?: string;
+  lineRange?: string;
+  lang?: string;
+}) {
+  const [text, setText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  function handleSubmit() {
+    if (!text.trim() || submitting) return;
+    setSubmitting(true);
+    onSubmit(text.trim());
+  }
+
+  function handleSuggest() {
+    if (!codeSnippet) return;
+    const suggestion = "```suggestion\n" + codeSnippet + "\n```\n";
+    setText(suggestion);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (ta) {
+        const cursorPos = "```suggestion\n".length;
+        ta.focus();
+        ta.setSelectionRange(cursorPos, cursorPos + codeSnippet.length);
+      }
+    });
+  }
+
+  // Extract suggestion body from text for live preview
+  const suggestionMatch = text.match(/```suggestion\n([\s\S]*?)\n```/);
+  const suggestionBody = suggestionMatch?.[1];
+
+  const snippetHtml = codeSnippet ? highlightCode(codeSnippet, lang) : undefined;
+  const suggestionHtml = suggestionBody != null ? highlightCode(suggestionBody, lang) : undefined;
+
+  return (
+    <tr className="inline-comment-row">
+      <td colSpan={colSpan}>
+        <div className="inline-comment-form">
+          {snippetHtml && !suggestionBody && (
+            <div className="inline-comment-snippet">
+              {lineRange && <span className="inline-comment-line-range">{lineRange}</span>}
+              <pre className="inline-comment-code" dangerouslySetInnerHTML={{ __html: snippetHtml }} />
+            </div>
+          )}
+          {suggestionHtml != null && (
+            <div className="inline-comment-suggestion-preview">
+              <div className="suggestion-preview-header">
+                <span className="suggestion-preview-label">Suggestion</span>
+                {lineRange && <span className="inline-comment-line-range">{lineRange}</span>}
+              </div>
+              {snippetHtml && (
+                <div className="suggestion-preview-original">
+                  <pre className="inline-comment-code suggestion-code-remove" dangerouslySetInnerHTML={{ __html: snippetHtml }} />
+                </div>
+              )}
+              <div className="suggestion-preview-replacement">
+                <pre className="inline-comment-code suggestion-code-add" dangerouslySetInnerHTML={{ __html: suggestionHtml }} />
+              </div>
+            </div>
+          )}
+          <textarea
+            ref={textareaRef}
+            className="reply-textarea"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Add a review comment..."
+            rows={5}
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                handleSubmit();
+              }
+              if (e.key === "Escape") {
+                onCancel();
+              }
+            }}
+          />
+          <div className="reply-actions">
+            {codeSnippet && (
+              <button className="suggest-button" onClick={handleSuggest} title="Insert a suggestion block with the selected code">
+                Suggest
+              </button>
+            )}
+            <button className="reply-cancel" onClick={onCancel}>Cancel</button>
+            <button
+              className="reply-submit"
+              disabled={!text.trim() || submitting}
+              onClick={handleSubmit}
+            >
+              Comment
+            </button>
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function EditableCommentBody({
+  comment,
+  onEdit,
+  lang,
+}: {
+  comment: ReviewComment;
+  onEdit?: (commentId: string, body: string) => void;
+  lang?: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(comment.body);
+
+  function handleSave() {
+    if (!text.trim() || !onEdit) return;
+    onEdit(comment.id, text.trim());
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <div className="comment-edit-form">
+        <textarea
+          className="reply-textarea"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={Math.max(3, text.split("\n").length + 1)}
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSave();
+            if (e.key === "Escape") { setText(comment.body); setEditing(false); }
+          }}
+        />
+        <div className="reply-actions">
+          <button className="reply-cancel" onClick={() => { setText(comment.body); setEditing(false); }}>Cancel</button>
+          <button className="reply-submit" disabled={!text.trim()} onClick={handleSave}>Save</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="comment-body-wrapper">
+      <CommentBodyRendered body={comment.body} lang={lang} />
+      {onEdit && (
+        <button className="comment-edit-button" onClick={() => setEditing(true)}>Edit</button>
+      )}
+    </div>
+  );
+}
+
+function InlineThreadMarker({
+  thread,
+  colSpan,
+  onEdit,
+  lang,
+}: {
+  thread: ReviewThread;
+  colSpan: number;
+  onEdit?: (commentId: string, body: string) => void;
+  lang?: string;
+}) {
+  const [collapsed, setCollapsed] = useState(thread.is_resolved);
+  const isSingle = thread.comments.length === 1;
+  const first = thread.comments[0];
+
+  return (
+    <tr className={`inline-thread-row ${thread.is_resolved ? "inline-thread-resolved" : ""}`}>
+      <td colSpan={colSpan}>
+        <div className="inline-thread">
+          {isSingle ? (
+            // Single comment: compact layout, no redundant header+body
+            <div className="inline-thread-single">
+              <div className="comment-header">
+                {first?.author.avatar_url && (
+                  <img className="comment-avatar" src={first.author.avatar_url} alt={first.author.login} width={18} height={18} />
+                )}
+                <span className="comment-author">@{first?.author.login}</span>
+                <span className="comment-time">{timeAgo(first?.created_at)}</span>
+                {thread.is_resolved && <span className="inline-thread-resolved-badge">Resolved</span>}
+              </div>
+              <EditableCommentBody comment={first} onEdit={onEdit} lang={lang} />
+            </div>
+          ) : (
+            // Multi-comment: collapsible header + comment list
+            <>
+              <div className="inline-thread-header" onClick={() => setCollapsed((v) => !v)}>
+                <span className={`collapse-chevron ${collapsed ? "collapsed" : ""}`}>&#9662;</span>
+                {first?.author.avatar_url && (
+                  <img className="comment-avatar" src={first.author.avatar_url} alt={first.author.login} width={16} height={16} />
+                )}
+                <span className="inline-thread-author">@{first?.author.login}</span>
+                <span className="inline-thread-preview">
+                  {collapsed ? first?.body.slice(0, 120) : ""}
+                </span>
+                <span className="inline-thread-meta">
+                  <span className="inline-thread-reply-count">
+                    {thread.comments.length} comments
+                  </span>
+                  {thread.is_resolved && <span className="inline-thread-resolved-badge">Resolved</span>}
+                  <span className="comment-time">{timeAgo(first?.created_at)}</span>
+                </span>
+              </div>
+              {!collapsed && (
+                <div className="inline-thread-comments">
+                  {thread.comments.map((comment) => (
+                    <div key={comment.id} className="inline-thread-comment">
+                      <div className="comment-header">
+                        {comment.author.avatar_url && (
+                          <img className="comment-avatar" src={comment.author.avatar_url} alt={comment.author.login} width={18} height={18} />
+                        )}
+                        <span className="comment-author">@{comment.author.login}</span>
+                        <span className="comment-time">{timeAgo(comment.created_at)}</span>
+                      </div>
+                      <EditableCommentBody comment={comment} onEdit={onEdit} lang={lang} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
 }
 
 interface DiffLine {
@@ -332,15 +618,88 @@ function groupIntoHunks(
   return hunks;
 }
 
+function buildThreadsByLine(threads: ReviewThread[] | undefined): Map<number, ReviewThread[]> {
+  const map = new Map<number, ReviewThread[]>();
+  for (const t of threads ?? []) {
+    const line = t.line ?? t.original_line;
+    if (line == null) continue;
+    const arr = map.get(line);
+    if (arr) arr.push(t);
+    else map.set(line, [t]);
+  }
+  return map;
+}
+
 // ── Unified hunk rendering ───────────────────────────────────────────────
 
-function UnifiedHunkLines({ lines, highlights }: { lines: DiffLine[]; highlights: Highlight[] }) {
+function UnifiedHunkLines({
+  lines,
+  highlights,
+  commentingOn,
+  dragging,
+  onLineMouseDown,
+  onLineMouseEnter,
+  onLineMouseUp,
+  onSubmitComment,
+  onCancelComment,
+  reviewThreads,
+  onEditComment,
+  lang,
+}: {
+  lines: DiffLine[];
+  highlights: Highlight[];
+  commentingOn?: CommentingOn | null;
+  dragging?: { anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null;
+  onLineMouseDown?: (line: number, side: "LEFT" | "RIGHT") => void;
+  onLineMouseEnter?: (line: number, side: "LEFT" | "RIGHT") => void;
+  onLineMouseUp?: () => void;
+  onSubmitComment?: (body: string) => void;
+  onCancelComment?: () => void;
+  reviewThreads?: ReviewThread[];
+  onEditComment?: (commentId: string, body: string) => void;
+  lang?: string;
+}) {
+  const threadsByLine = useMemo(() => buildThreadsByLine(reviewThreads), [reviewThreads]);
+
   return (
     <>
       {lines.map((line, idx) => {
         const lineNum = line.newLineNum ?? line.oldLineNum;
         const hl = getHighlightForLine(lineNum, highlights);
         const hlStart = isHighlightStart(lineNum, highlights);
+        const commentLine = line.type === "remove" ? line.oldLineNum : line.newLineNum;
+        const commentSide: "LEFT" | "RIGHT" = line.type === "remove" ? "LEFT" : "RIGHT";
+        const canComment = onLineMouseDown && line.type !== "header" && commentLine != null;
+        const isEndOfSelection =
+          commentingOn &&
+          commentingOn.endLine === commentLine &&
+          commentingOn.side === commentSide;
+        const isInSelection =
+          (commentingOn &&
+            commentingOn.side === commentSide &&
+            commentLine != null &&
+            commentLine >= commentingOn.startLine &&
+            commentLine <= commentingOn.endLine) ||
+          (dragging &&
+            dragging.side === commentSide &&
+            commentLine != null &&
+            commentLine >= Math.min(dragging.anchorLine, dragging.currentLine) &&
+            commentLine <= Math.max(dragging.anchorLine, dragging.currentLine));
+        const lineThreads = commentLine != null ? (threadsByLine.get(commentLine) ?? []) : [];
+        // Build code snippet for the comment form at end of selection
+        const codeSnippet = isEndOfSelection && commentingOn
+          ? lines
+              .filter((l) => {
+                const ln = l.type === "remove" ? l.oldLineNum : l.newLineNum;
+                return ln != null && ln >= commentingOn.startLine && ln <= commentingOn.endLine && l.type !== "header";
+              })
+              .map((l) => l.content)
+              .join("\n")
+          : undefined;
+        const lineRange = isEndOfSelection && commentingOn && commentingOn.startLine !== commentingOn.endLine
+          ? `L${commentingOn.startLine}-L${commentingOn.endLine}`
+          : undefined;
+
         return (
           <Fragment key={idx}>
             {hlStart && (
@@ -351,10 +710,30 @@ function UnifiedHunkLines({ lines, highlights }: { lines: DiffLine[]; highlights
               </tr>
             )}
             <tr
-              className={`diff-line diff-line-${line.type}${hl ? ` highlighted highlighted-${hl.severity}` : ""}`}
+              className={`diff-line diff-line-${line.type}${hl ? ` highlighted highlighted-${hl.severity}` : ""}${canComment ? " commentable-line" : ""}${isInSelection ? " line-selected" : ""}`}
             >
-              <td className="line-num">{line.oldLineNum ?? ""}</td>
-              <td className="line-num">{line.newLineNum ?? ""}</td>
+              <td
+                className="line-num"
+                onMouseDown={canComment && line.type !== "add" ? (e) => { e.preventDefault(); onLineMouseDown(commentLine!, commentSide); } : undefined}
+                onMouseEnter={canComment && onLineMouseEnter && line.type !== "add" ? () => onLineMouseEnter(commentLine!, commentSide) : undefined}
+                onMouseUp={canComment && onLineMouseUp && line.type !== "add" ? onLineMouseUp : undefined}
+              >
+                {line.oldLineNum ?? ""}
+                {canComment && line.type !== "add" && (
+                  <span className="line-comment-button">+</span>
+                )}
+              </td>
+              <td
+                className="line-num"
+                onMouseDown={canComment && line.type !== "remove" ? (e) => { e.preventDefault(); onLineMouseDown(commentLine!, commentSide); } : undefined}
+                onMouseEnter={canComment && onLineMouseEnter && line.type !== "remove" ? () => onLineMouseEnter(commentLine!, commentSide) : undefined}
+                onMouseUp={canComment && onLineMouseUp && line.type !== "remove" ? onLineMouseUp : undefined}
+              >
+                {line.newLineNum ?? ""}
+                {canComment && line.type !== "remove" && (
+                  <span className="line-comment-button">+</span>
+                )}
+              </td>
               <td className="line-prefix">
                 {line.type === "add" ? "+" : line.type === "remove" ? "-" : line.type === "header" ? "@@" : " "}
               </td>
@@ -362,6 +741,19 @@ function UnifiedHunkLines({ lines, highlights }: { lines: DiffLine[]; highlights
                 <pre dangerouslySetInnerHTML={{ __html: line.html }} />
               </td>
             </tr>
+            {lineThreads.map((thread) => (
+              <InlineThreadMarker key={thread.id} thread={thread} colSpan={4} onEdit={onEditComment} lang={lang} />
+            ))}
+            {isEndOfSelection && onSubmitComment && onCancelComment && (
+              <InlineCommentForm
+                onSubmit={onSubmitComment}
+                onCancel={onCancelComment}
+                colSpan={4}
+                codeSnippet={codeSnippet}
+                lineRange={lineRange}
+                lang={lang}
+              />
+            )}
           </Fragment>
         );
       })}
@@ -375,12 +767,32 @@ function UnifiedView({
   collapsedHunks,
   onToggleHunk,
   showSignificance,
+  commentingOn,
+  dragging,
+  onLineMouseDown,
+  onLineMouseEnter,
+  onLineMouseUp,
+  onSubmitComment,
+  onCancelComment,
+  reviewThreads,
+  onEditComment,
+  lang,
 }: {
   hunks: Hunk[];
   highlights: Highlight[];
   collapsedHunks: Set<number>;
   onToggleHunk: (index: number) => void;
   showSignificance: boolean;
+  commentingOn?: CommentingOn | null;
+  dragging?: { anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null;
+  onLineMouseDown?: (line: number, side: "LEFT" | "RIGHT") => void;
+  onLineMouseEnter?: (line: number, side: "LEFT" | "RIGHT") => void;
+  onLineMouseUp?: () => void;
+  onSubmitComment?: (body: string) => void;
+  onCancelComment?: () => void;
+  reviewThreads?: ReviewThread[];
+  onEditComment?: (commentId: string, body: string) => void;
+  lang?: string;
 }) {
   return (
     <table className="diff-table unified">
@@ -437,13 +849,13 @@ function UnifiedView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} />
+                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} />
+                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -455,13 +867,83 @@ function UnifiedView({
 
 // ── Split hunk rendering ─────────────────────────────────────────────────
 
-function SplitHunkLines({ splitLines, highlights }: { splitLines: SplitLine[]; highlights: Highlight[] }) {
+function SplitHunkLines({
+  splitLines,
+  highlights,
+  commentingOn,
+  dragging,
+  onLineMouseDown,
+  onLineMouseEnter,
+  onLineMouseUp,
+  onSubmitComment,
+  onCancelComment,
+  reviewThreads,
+  onEditComment,
+  lang,
+}: {
+  splitLines: SplitLine[];
+  highlights: Highlight[];
+  commentingOn?: CommentingOn | null;
+  dragging?: { anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null;
+  onLineMouseDown?: (line: number, side: "LEFT" | "RIGHT") => void;
+  onLineMouseEnter?: (line: number, side: "LEFT" | "RIGHT") => void;
+  onLineMouseUp?: () => void;
+  onSubmitComment?: (body: string) => void;
+  onCancelComment?: () => void;
+  reviewThreads?: ReviewThread[];
+  onEditComment?: (commentId: string, body: string) => void;
+  lang?: string;
+}) {
+  const threadsByLine = useMemo(() => buildThreadsByLine(reviewThreads), [reviewThreads]);
+
   return (
     <>
       {splitLines.map((pair, idx) => {
         const rightLineNum = pair.right?.newLineNum ?? pair.right?.oldLineNum;
         const hl = getHighlightForLine(rightLineNum ?? null, highlights);
         const hlStart = isHighlightStart(rightLineNum ?? null, highlights);
+        const leftLine = pair.left?.oldLineNum ?? pair.left?.newLineNum ?? null;
+        const rightLine = pair.right?.newLineNum ?? pair.right?.oldLineNum ?? null;
+        const canCommentLeft = onLineMouseDown && pair.left && pair.left.type !== "header" && leftLine != null;
+        const canCommentRight = onLineMouseDown && pair.right && pair.right.type !== "header" && rightLine != null;
+        const leftSide: "LEFT" | "RIGHT" = pair.left?.type === "remove" ? "LEFT" : "RIGHT";
+        const rightSide: "LEFT" | "RIGHT" = "RIGHT";
+        const isEndLeft =
+          commentingOn && commentingOn.endLine === leftLine && commentingOn.side === leftSide;
+        const isEndRight =
+          commentingOn && commentingOn.endLine === rightLine && commentingOn.side === rightSide;
+        const showForm = isEndLeft || isEndRight;
+        // Build code snippet for the comment form at end of selection
+        const codeSnippet = showForm && commentingOn
+          ? splitLines
+              .map((p) => {
+                const dl = commentingOn.side === "LEFT" ? p.left : p.right;
+                if (!dl || dl.type === "header") return null;
+                const ln = dl.type === "remove" ? dl.oldLineNum : dl.newLineNum;
+                if (ln == null || ln < commentingOn.startLine || ln > commentingOn.endLine) return null;
+                return dl.content;
+              })
+              .filter((c): c is string => c !== null)
+              .join("\n")
+          : undefined;
+        const lineRange = showForm && commentingOn && commentingOn.startLine !== commentingOn.endLine
+          ? `L${commentingOn.startLine}-L${commentingOn.endLine}`
+          : undefined;
+
+        const isInSelection = (ln: number | null, side: "LEFT" | "RIGHT") => {
+          if (ln == null) return false;
+          if (commentingOn && commentingOn.side === side && ln >= commentingOn.startLine && ln <= commentingOn.endLine) return true;
+          if (dragging && dragging.side === side && ln >= Math.min(dragging.anchorLine, dragging.currentLine) && ln <= Math.max(dragging.anchorLine, dragging.currentLine)) return true;
+          return false;
+        };
+
+        // Collect threads for both sides, deduplicated
+        const leftThreads = leftLine != null ? (threadsByLine.get(leftLine) ?? []) : [];
+        const rightThreads = rightLine != null ? (threadsByLine.get(rightLine) ?? []) : [];
+        const lineThreads = rightLine === leftLine
+          ? leftThreads
+          : [...leftThreads, ...rightThreads.filter(t => !leftThreads.some(lt => lt.id === t.id))];
+
         return (
           <Fragment key={idx}>
             {hlStart && (
@@ -472,35 +954,52 @@ function SplitHunkLines({ splitLines, highlights }: { splitLines: SplitLine[]; h
               </tr>
             )}
             <tr
-              className={`diff-split-row${hl ? ` highlighted highlighted-${hl.severity}` : ""}`}
+              className={`diff-split-row${hl ? ` highlighted highlighted-${hl.severity}` : ""}${(canCommentLeft || canCommentRight) ? " commentable-line" : ""}`}
             >
               {/* Left side (base/old) */}
-              <td className="line-num left-num">
-                {pair.left?.oldLineNum ?? pair.left?.newLineNum ?? ""}
+              <td
+                className={`line-num left-num${isInSelection(leftLine, leftSide) ? " line-selected" : ""}`}
+                onMouseDown={canCommentLeft ? (e) => { e.preventDefault(); onLineMouseDown(leftLine!, leftSide); } : undefined}
+                onMouseEnter={canCommentLeft && onLineMouseEnter ? () => onLineMouseEnter(leftLine!, leftSide) : undefined}
+                onMouseUp={canCommentLeft && onLineMouseUp ? onLineMouseUp : undefined}
+              >
+                {leftLine ?? ""}
+                {canCommentLeft && <span className="line-comment-button">+</span>}
               </td>
               <td
-                className={`line-content left-content ${pair.left ? `diff-line-${pair.left.type}` : "empty-line"}`}
+                className={`line-content left-content ${pair.left ? `diff-line-${pair.left.type}` : "empty-line"}${isInSelection(leftLine, leftSide) ? " line-selected" : ""}`}
               >
-                <pre
-                  dangerouslySetInnerHTML={{
-                    __html: pair.left?.html ?? "",
-                  }}
-                />
+                <pre dangerouslySetInnerHTML={{ __html: pair.left?.html ?? "" }} />
               </td>
               {/* Right side (head/new) */}
-              <td className="line-num right-num">
-                {pair.right?.newLineNum ?? pair.right?.oldLineNum ?? ""}
+              <td
+                className={`line-num right-num${isInSelection(rightLine, rightSide) ? " line-selected" : ""}`}
+                onMouseDown={canCommentRight ? (e) => { e.preventDefault(); onLineMouseDown(rightLine!, rightSide); } : undefined}
+                onMouseEnter={canCommentRight && onLineMouseEnter ? () => onLineMouseEnter(rightLine!, rightSide) : undefined}
+                onMouseUp={canCommentRight && onLineMouseUp ? onLineMouseUp : undefined}
+              >
+                {rightLine ?? ""}
+                {canCommentRight && <span className="line-comment-button">+</span>}
               </td>
               <td
-                className={`line-content right-content ${pair.right ? `diff-line-${pair.right.type}` : "empty-line"}`}
+                className={`line-content right-content ${pair.right ? `diff-line-${pair.right.type}` : "empty-line"}${isInSelection(rightLine, rightSide) ? " line-selected" : ""}`}
               >
-                <pre
-                  dangerouslySetInnerHTML={{
-                    __html: pair.right?.html ?? "",
-                  }}
-                />
+                <pre dangerouslySetInnerHTML={{ __html: pair.right?.html ?? "" }} />
               </td>
             </tr>
+            {lineThreads.map((thread) => (
+              <InlineThreadMarker key={thread.id} thread={thread} colSpan={4} onEdit={onEditComment} lang={lang} />
+            ))}
+            {showForm && onSubmitComment && onCancelComment && (
+              <InlineCommentForm
+                onSubmit={onSubmitComment}
+                onCancel={onCancelComment}
+                colSpan={4}
+                codeSnippet={codeSnippet}
+                lineRange={lineRange}
+                lang={lang}
+              />
+            )}
           </Fragment>
         );
       })}
@@ -514,12 +1013,32 @@ function SplitView({
   collapsedHunks,
   onToggleHunk,
   showSignificance,
+  commentingOn,
+  dragging,
+  onLineMouseDown,
+  onLineMouseEnter,
+  onLineMouseUp,
+  onSubmitComment,
+  onCancelComment,
+  reviewThreads,
+  onEditComment,
+  lang,
 }: {
   hunks: Hunk[];
   highlights: Highlight[];
   collapsedHunks: Set<number>;
   onToggleHunk: (index: number) => void;
   showSignificance: boolean;
+  commentingOn?: CommentingOn | null;
+  dragging?: { anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null;
+  onLineMouseDown?: (line: number, side: "LEFT" | "RIGHT") => void;
+  onLineMouseEnter?: (line: number, side: "LEFT" | "RIGHT") => void;
+  onLineMouseUp?: () => void;
+  onSubmitComment?: (body: string) => void;
+  onCancelComment?: () => void;
+  reviewThreads?: ReviewThread[];
+  onEditComment?: (commentId: string, body: string) => void;
+  lang?: string;
 }) {
   return (
     <table className="diff-table split">
@@ -579,13 +1098,13 @@ function SplitView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <SplitHunkLines splitLines={splitLines} highlights={highlights} />
+                        <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <SplitHunkLines splitLines={splitLines} highlights={highlights} />
+                <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -597,9 +1116,59 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes }: DiffViewerProps) {
+export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, reviewThreads }: DiffViewerProps) {
+  const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
+  const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
+
+  function handleLineMouseDown(line: number, side: "LEFT" | "RIGHT") {
+    setDragging({ anchorLine: line, side, currentLine: line });
+    setCommentingOn(null);
+  }
+
+  function handleLineMouseEnter(line: number, side: "LEFT" | "RIGHT") {
+    if (!dragging || dragging.side !== side) return;
+    setDragging((d) => d ? { ...d, currentLine: line } : null);
+  }
+
+  function handleLineMouseUp() {
+    if (!dragging) return;
+    const startLine = Math.min(dragging.anchorLine, dragging.currentLine);
+    const endLine = Math.max(dragging.anchorLine, dragging.currentLine);
+    setCommentingOn({ startLine, endLine, side: dragging.side });
+    setDragging(null);
+  }
+
+  function handleSubmitComment(body: string) {
+    if (!commentingOn || !onCreateComment) return;
+    const isRange = commentingOn.startLine !== commentingOn.endLine;
+    onCreateComment(
+      file.path,
+      commentingOn.endLine,
+      commentingOn.side,
+      body,
+      isRange ? commentingOn.startLine : undefined,
+      isRange ? commentingOn.side : undefined,
+    );
+    setCommentingOn(null);
+  }
+
+  function handleCancelComment() {
+    setCommentingOn(null);
+    setDragging(null);
+  }
+
+  useEffect(() => {
+    if (!dragging) return;
+    function onMouseUp() {
+      handleLineMouseUp();
+    }
+    document.addEventListener("mouseup", onMouseUp);
+    return () => document.removeEventListener("mouseup", onMouseUp);
+  }, [dragging]);
+
+  const lang = useMemo(() => detectLanguage(file.path), [file.path]);
+
   const { hunks, diffLines, useHunkView } = useMemo(() => {
-    const lang = detectLanguage(file.path);
     const hunkScores = file.hunk_scores ?? [];
     const hasUnifiedDiff = file.unified_diff && file.unified_diff.length > 0;
 
@@ -656,6 +1225,11 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes }
       return next;
     });
   };
+
+  const fileThreads = useMemo(
+    () => (reviewThreads ?? []).filter((t) => t.path === file.path),
+    [reviewThreads, file.path]
+  );
 
   const highlights = showAiNotes ? (file.highlights ?? []) : [];
   const isCritical =
@@ -731,6 +1305,16 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes }
               collapsedHunks={collapsedHunks}
               onToggleHunk={toggleHunk}
               showSignificance={showHunkSignificance}
+              commentingOn={commentingOn}
+              dragging={dragging}
+              onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined}
+              onLineMouseEnter={handleLineMouseEnter}
+              onLineMouseUp={handleLineMouseUp}
+              onSubmitComment={handleSubmitComment}
+              onCancelComment={handleCancelComment}
+              reviewThreads={fileThreads}
+              onEditComment={onEditComment}
+              lang={lang}
             />
           ) : (
             <SplitView
@@ -739,6 +1323,16 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes }
               collapsedHunks={collapsedHunks}
               onToggleHunk={toggleHunk}
               showSignificance={showHunkSignificance}
+              commentingOn={commentingOn}
+              dragging={dragging}
+              onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined}
+              onLineMouseEnter={handleLineMouseEnter}
+              onLineMouseUp={handleLineMouseUp}
+              onSubmitComment={handleSubmitComment}
+              onCancelComment={handleCancelComment}
+              reviewThreads={fileThreads}
+              onEditComment={onEditComment}
+              lang={lang}
             />
           )
         ) : (
@@ -750,7 +1344,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes }
               <col />
             </colgroup>
             <tbody>
-              <UnifiedHunkLines lines={diffLines} highlights={highlights} />
+              <UnifiedHunkLines lines={diffLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} lang={lang} />
             </tbody>
           </table>
         )}
