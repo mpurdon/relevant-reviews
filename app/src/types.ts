@@ -101,6 +101,14 @@ export interface Tab {
   sidebarView: SidebarView;
 }
 
+export interface SearchMatch {
+  filePath: string;
+  lineNumber: number;
+  lineContent: string;
+  matchStart: number;
+  matchLength: number;
+}
+
 export interface Settings {
   model: string;
   github_token: string;
