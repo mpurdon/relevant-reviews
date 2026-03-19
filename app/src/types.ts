@@ -64,3 +64,28 @@ export interface Tab {
   selectedFile: FileDiff | null;
   viewedFiles: Set<string>;
 }
+
+export interface Settings {
+  model: string;
+  github_token: string;
+  aws_profile: string;
+  filter_older: boolean;
+  filter_team: boolean;
+}
+
+export type ReviewStatus = "approved" | "changes_requested" | "commented" | "dismissed" | "pending";
+
+export interface ReviewRequestItem {
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  html_url: string;
+  author: string;
+  created_at: string;
+  updated_at: string;
+  draft: boolean;
+  direct_request: boolean;
+  my_review_status: ReviewStatus;
+  unresolved_thread_count: number;
+}

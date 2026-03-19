@@ -45,7 +45,7 @@ impl BedrockClient {
                     .as_service_error()
                     .map(|se| format!("{}: {}", se.code().unwrap_or("Unknown"), se.message().unwrap_or("no details")))
                     .unwrap_or_else(|| format!("{}", e));
-                format!("Bedrock API error: {}", msg)
+                format!("Bedrock API error: {}. Make sure you are logged in: aws sso login --profile claude-code-bedrock", msg)
             })?;
 
         let output = response

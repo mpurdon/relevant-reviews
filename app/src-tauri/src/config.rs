@@ -11,30 +11,32 @@ pub fn config_path() -> PathBuf {
         .join("config")
 }
 
+fn default_settings() -> Settings {
+    Settings {
+        model: String::new(),
+        github_token: String::new(),
+        aws_profile: String::new(),
+        filter_older: true,
+        filter_team: true,
+    }
+}
+
 pub fn load_settings() -> Settings {
     let path = config_path();
     if !path.exists() {
-        return Settings {
-            model: String::new(),
-            github_token: String::new(),
-            aws_profile: String::new(),
-        };
+        return default_settings();
     }
 
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => {
-            return Settings {
-                model: String::new(),
-                github_token: String::new(),
-                aws_profile: String::new(),
-            }
-        }
+        Err(_) => return default_settings(),
     };
 
     let mut model = String::new();
     let mut github_token = String::new();
     let mut aws_profile = String::new();
+    let mut filter_older = true;
+    let mut filter_team = true;
 
     for line in content.lines() {
         if let Some(val) = line.strip_prefix("model=") {
@@ -43,6 +45,10 @@ pub fn load_settings() -> Settings {
             github_token = val.to_string();
         } else if let Some(val) = line.strip_prefix("aws_profile=") {
             aws_profile = val.to_string();
+        } else if let Some(val) = line.strip_prefix("filter_older=") {
+            filter_older = val == "true";
+        } else if let Some(val) = line.strip_prefix("filter_team=") {
+            filter_team = val == "true";
         }
     }
 
@@ -50,6 +56,8 @@ pub fn load_settings() -> Settings {
         model,
         github_token,
         aws_profile,
+        filter_older,
+        filter_team,
     }
 }
 
@@ -67,6 +75,8 @@ pub fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
     if !settings.aws_profile.is_empty() {
         content.push_str(&format!("aws_profile={}\n", settings.aws_profile));
     }
+    content.push_str(&format!("filter_older={}\n", settings.filter_older));
+    content.push_str(&format!("filter_team={}\n", settings.filter_team));
 
     fs::write(&path, content).map_err(|e| format!("Failed to save settings: {}", e))?;
 
