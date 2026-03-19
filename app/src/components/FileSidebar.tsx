@@ -65,19 +65,6 @@ function getDiffTypeClass(diffType: string): string {
   }
 }
 
-function getRiskLabel(level: RiskLevel): string {
-  switch (level) {
-    case "critical":
-      return "CRIT";
-    case "high":
-      return "HIGH";
-    case "medium":
-      return "MED";
-    case "low":
-      return "LOW";
-  }
-}
-
 function sortByPathThenName(pathA: string, pathB: string): number {
   const dirA = pathA.substring(0, pathA.lastIndexOf("/"));
   const dirB = pathB.substring(0, pathB.lastIndexOf("/"));
@@ -215,9 +202,6 @@ function FileItem({
         <span className="line-stats">
           <span className="line-stat-add">+{file.additions}</span>
           <span className="line-stat-del">-{file.deletions}</span>
-        </span>
-        <span className={`risk-badge risk-${file.risk_level}`}>
-          {getRiskLabel(file.risk_level)}
         </span>
         {file.highlights?.length > 0 && (
           <span
@@ -551,7 +535,7 @@ export function FileSidebar({
       )}
       {showHunkSignificance && (
         <div className="sidebar-filter-bar">
-          <span className="sidebar-filter-label">Significance:</span>
+          <span className="sidebar-filter-label">Significance hunks:</span>
           <div className="sidebar-filter-toggle">
             {(["all", "high", "medium"] as HunkSignificanceFilter[]).map((level) => (
               <button
