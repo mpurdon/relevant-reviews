@@ -1,7 +1,8 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 import { SummaryParagraphs } from "./SummaryParagraphs";
-import type { ReviewManifest, DiffViewMode, Tab } from "../types";
+import type { ReviewManifest, DiffViewMode, Tab, CommentThreadsState } from "../types";
 
 interface HeaderProps {
   tabs: Tab[];
@@ -18,6 +19,8 @@ interface HeaderProps {
   onToggleHunkSignificance: () => void;
   showAiNotes: boolean;
   onToggleAiNotes: () => void;
+  commentThreads?: CommentThreadsState;
+  onSubmitReview?: (event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string) => Promise<void>;
 }
 
 export function Header({
@@ -35,6 +38,8 @@ export function Header({
   onToggleHunkSignificance,
   showAiNotes,
   onToggleAiNotes,
+  commentThreads,
+  onSubmitReview,
 }: HeaderProps) {
   const totalCount = manifest?.files.length ?? 0;
   const progress = totalCount > 0 ? (viewedCount / totalCount) * 100 : 0;
@@ -131,6 +136,7 @@ export function Header({
             <button className="settings-button" onClick={onSettingsClick}>
               Settings
             </button>
+            {onSubmitReview && <ReviewSubmitButton commentThreads={commentThreads} onSubmitReview={onSubmitReview} prTitle={manifest?.pr_title ?? ""} prUrl={manifest?.pr_url ?? ""} />}
           </div>
         </div>
       )}
@@ -140,5 +146,130 @@ export function Header({
         </div>
       )}
     </header>
+  );
+}
+
+function ReviewSubmitButton({
+  commentThreads,
+  onSubmitReview,
+  prTitle,
+  prUrl,
+}: {
+  commentThreads?: CommentThreadsState;
+  onSubmitReview: (event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT", body: string) => Promise<void>;
+  prTitle: string;
+  prUrl: string;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [body, setBody] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [fetchedThreads, setFetchedThreads] = useState<import("../types").ReviewThread[] | null>(null);
+
+  // Use freshly fetched threads if available, otherwise fall back to prop
+  const threads = fetchedThreads ?? (commentThreads?.status === "loaded" ? commentThreads.threads : []);
+  const unresolvedThreads = threads.filter((t) => !t.is_resolved);
+  const unresolvedCount = unresolvedThreads.length;
+
+  async function handleOpen() {
+    const wasOpen = isOpen;
+    setIsOpen((v) => !v);
+    if (wasOpen) return;
+
+    setGenerating(true);
+    try {
+      // Always fetch fresh threads from GitHub to get accurate state
+      const freshThreads = await invoke<import("../types").ReviewThread[]>("fetch_review_comments", { prUrl });
+      setFetchedThreads(freshThreads);
+
+      const unresolved = freshThreads.filter((t) => !t.is_resolved);
+
+      const threadsJson = unresolved.length > 0
+        ? JSON.stringify(unresolved.map((t) => ({
+            path: t.path,
+            line: t.line,
+            comments: t.comments.map((c) => ({ author: c.author.login, body: c.body })),
+          })))
+        : "[]";
+
+      const generated = await invoke<string>("generate_review_body", {
+        threadsJson,
+        prTitle,
+        hasUnresolved: unresolved.length > 0,
+      });
+      setBody(generated);
+    } catch {
+      // Silently fail — user can type manually
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function handleSubmit(event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
+    setSubmitting(true);
+    try {
+      await onSubmitReview(event, body);
+      setBody("");
+      setIsOpen(false);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="review-submit-wrapper">
+      <button
+        className="review-submit-toggle"
+        onClick={handleOpen}
+      >
+        Finish Review
+        {unresolvedCount > 0 && (
+          <span className="review-submit-badge">{unresolvedCount}</span>
+        )}
+      </button>
+      {isOpen && (
+        <div className="review-submit-dropdown">
+          <textarea
+            className="review-submit-body"
+            value={generating ? "Generating..." : body}
+            onChange={(e) => setBody(e.target.value)}
+            placeholder="Leave a comment with your review (optional)"
+            rows={3}
+            disabled={generating}
+          />
+          {unresolvedCount > 0 && (
+            <div className="review-submit-warning">
+              {unresolvedCount} unresolved {unresolvedCount === 1 ? "thread" : "threads"}
+            </div>
+          )}
+          <div className="review-submit-actions">
+            <button
+              className="review-action-comment"
+              disabled={submitting || generating}
+              onClick={() => handleSubmit("COMMENT")}
+              title="Submit review without explicit approval or change request"
+            >
+              Comment
+            </button>
+            <button
+              className="review-action-approve"
+              disabled={submitting || generating}
+              onClick={() => handleSubmit("APPROVE")}
+              title="Approve this pull request"
+            >
+              Approve
+            </button>
+            <button
+              className="review-action-request-changes"
+              disabled={submitting || generating}
+              onClick={() => handleSubmit("REQUEST_CHANGES")}
+              title="Request changes on this pull request"
+            >
+              Request Changes
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
