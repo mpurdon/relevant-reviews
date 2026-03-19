@@ -243,25 +243,13 @@ impl GithubClient {
         Ok(user.login)
     }
 
-    pub async fn get_review_requests(
+    async fn search_prs(
         &self,
-        username: &str,
-        cutoff_date: &str,
-        fetch_recent: bool,
-    ) -> Result<Vec<ReviewRequestItem>, String> {
-        let date_filter = if fetch_recent {
-            format!("created:>={}", cutoff_date)
-        } else {
-            format!("created:<{}", cutoff_date)
-        };
-
-        let query = format!(
-            "is:pr is:open review-requested:{} -is:draft {}",
-            username, date_filter
-        );
+        query: &str,
+    ) -> Result<Vec<SearchItem>, String> {
         let url = format!(
             "https://api.github.com/search/issues?q={}&sort=created&order=asc&per_page=100",
-            urlencoding::encode(&query)
+            urlencoding::encode(query)
         );
 
         let resp = self
@@ -285,8 +273,55 @@ impl GithubClient {
             .await
             .map_err(|e| format!("Failed to parse search results: {}", e))?;
 
+        Ok(search.items)
+    }
+
+    pub async fn get_review_requests(
+        &self,
+        username: &str,
+        cutoff_date: &str,
+        fetch_recent: bool,
+    ) -> Result<Vec<ReviewRequestItem>, String> {
+        let date_filter = if fetch_recent {
+            format!("created:>={}", cutoff_date)
+        } else {
+            format!("created:<{}", cutoff_date)
+        };
+
+        // Search for PRs where user is a requested reviewer, has reviewed, or has commented
+        // This covers: pending requests, submitted reviews, and pending reviews with comments
+        let requested_query = format!(
+            "is:pr is:open review-requested:{} -is:draft {}",
+            username, date_filter
+        );
+        let reviewed_query = format!(
+            "is:pr is:open reviewed-by:{} -author:{} -is:draft {}",
+            username, username, date_filter
+        );
+        let commented_query = format!(
+            "is:pr is:open commenter:{} -author:{} -is:draft {}",
+            username, username, date_filter
+        );
+
+        // Run all three searches concurrently
+        let (requested_result, reviewed_result, commented_result) = tokio::join!(
+            self.search_prs(&requested_query),
+            self.search_prs(&reviewed_query),
+            self.search_prs(&commented_query),
+        );
+
+        let requested_items = requested_result?;
+        let reviewed_items = reviewed_result.unwrap_or_default();
+        let commented_items = commented_result.unwrap_or_default();
+
+        // Merge and deduplicate by URL
+        let mut seen = std::collections::HashSet::new();
         let mut items: Vec<ReviewRequestItem> = Vec::new();
-        for item in search.items {
+
+        for item in requested_items.into_iter().chain(reviewed_items.into_iter()).chain(commented_items.into_iter()) {
+            if !seen.insert(item.html_url.clone()) {
+                continue;
+            }
             if let Some(ref pr) = item.pull_request {
                 if pr.merged_at.is_some() {
                     continue;
