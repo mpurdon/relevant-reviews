@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FileSidebar } from "./components/FileSidebar";
@@ -10,7 +10,8 @@ import { ReviewRequestList } from "./components/ReviewRequestList";
 import { LoadingView } from "./components/LoadingView";
 import { SettingsModal } from "./components/SettingsModal";
 import { SummaryParagraphs } from "./components/SummaryParagraphs";
-import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment } from "./types";
+import { SearchBar } from "./components/SearchBar";
+import type { ReviewManifest, FileDiff, DiffViewMode, Tab, FetchProgress, HunkSignificanceFilter, SidebarView, ReviewThread, ReviewComment, SearchMatch } from "./types";
 
 function App() {
   const nextTabId = useRef(1);
@@ -28,8 +29,24 @@ function App() {
   const [loadingPrTitle, setLoadingPrTitle] = useState<string | null>(null);
   const [progress, setProgress] = useState<FetchProgress | null>(null);
   const [fileCounts, setFileCounts] = useState<Record<number, { done: number; total: number }>>({});
+  const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
+  const [searchCurrentIndex, setSearchCurrentIndex] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+
+  const selectedFilePath = activeTab?.selectedFile?.path ?? null;
+  const fileSearchMatches = useMemo(
+    () => searchMatches.filter((m) => m.filePath === selectedFilePath),
+    [searchMatches, selectedFilePath]
+  );
+  const currentSearchMatch = useMemo(
+    () => {
+      const m = searchMatches[searchCurrentIndex];
+      return m?.filePath === selectedFilePath ? m : null;
+    },
+    [searchMatches, searchCurrentIndex, selectedFilePath]
+  );
 
   function createTab(manifest: ReviewManifest): Tab {
     const hasGroups = (manifest.change_groups ?? []).length > 0;
@@ -494,6 +511,14 @@ function App() {
         onClose={() => setSettingsOpen(false)}
       />
       {activeTab && (
+        <>
+        <SearchBar
+          files={activeTab.manifest.files}
+          selectedFile={activeTab.selectedFile}
+          onSelectFile={setSelectedFile}
+          onHighlightMatches={(matches, idx, q) => { setSearchMatches(matches); setSearchCurrentIndex(idx); setSearchQuery(q); }}
+          onClearHighlights={() => { setSearchMatches([]); setSearchCurrentIndex(0); setSearchQuery(""); }}
+        />
         <div className="main-content">
           <FileSidebar
             files={activeTab.manifest.files}
@@ -532,7 +557,7 @@ function App() {
                 <div className="no-file-selected">Switch to Comments tab to load threads</div>
               )
             ) : activeTab.selectedFile ? (
-              <DiffViewer key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} onCreateComment={handleCreateComment} onEditComment={handleEditComment} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} />
+              <DiffViewer key={activeTab.selectedFile.path} file={activeTab.selectedFile} viewMode={viewMode} showHunkSignificance={showHunkSignificance} showAiNotes={showAiNotes} onCreateComment={handleCreateComment} onEditComment={handleEditComment} reviewThreads={activeTab.commentThreads.status === "loaded" ? activeTab.commentThreads.threads : undefined} searchMatches={fileSearchMatches} currentSearchMatch={currentSearchMatch} searchQuery={searchQuery} />
             ) : activeTab.manifest.summary ? (
               <div className="pr-summary">
                 <h3>PR Summary</h3>
@@ -543,6 +568,7 @@ function App() {
             )}
           </div>
         </div>
+        </>
       )}
     </div>
   );

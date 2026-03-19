@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FileDiff, RiskLevel, ChangeGroup, HunkSignificanceFilter, SidebarView, ReviewThread } from "../types";
+import { getFileName } from "../utils";
 
 interface FileSidebarProps {
   files: FileDiff[];
@@ -33,10 +34,6 @@ function fileMatchesHunkFilter(file: FileDiff, filter: HunkSignificanceFilter): 
   if (filter === "medium") return max === "high" || max === "medium";
   // "low" means show all (including low-only) — same as "all"
   return true;
-}
-
-function getFileName(path: string): string {
-  return path.split("/").pop() || path;
 }
 
 function getDiffTypeIcon(diffType: string): string {

@@ -1,3 +1,7 @@
+export function getFileName(path: string): string {
+  return path.split("/").pop() || path;
+}
+
 export function timeAgo(dateStr: string): string {
   const now = Date.now();
   const then = new Date(dateStr).getTime();

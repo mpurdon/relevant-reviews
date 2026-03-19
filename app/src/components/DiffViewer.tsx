@@ -1,7 +1,7 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
-import type { FileDiff, DiffViewMode, Highlight, ReviewThread, ReviewComment } from "../types";
+import type { FileDiff, DiffViewMode, Highlight, ReviewThread, ReviewComment, SearchMatch } from "../types";
 import { timeAgo } from "../utils";
 
 const extToLang: Record<string, string> = {
@@ -101,6 +101,9 @@ interface DiffViewerProps {
   onCreateComment?: (path: string, endLine: number, side: "LEFT" | "RIGHT", body: string, startLine?: number, startSide?: "LEFT" | "RIGHT") => Promise<void>;
   onEditComment?: (commentId: string, body: string) => void;
   reviewThreads?: ReviewThread[];
+  searchMatches?: SearchMatch[];
+  currentSearchMatch?: SearchMatch | null;
+  searchQuery?: string;
 }
 
 export const CommentBodyRendered = memo(function CommentBodyRendered({ body, lang }: { body: string; lang?: string }) {
@@ -1133,9 +1136,10 @@ function SplitView({
 
 // ── Main DiffViewer ──────────────────────────────────────────────────────
 
-export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, reviewThreads }: DiffViewerProps) {
+export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, onCreateComment, onEditComment, reviewThreads, searchMatches, currentSearchMatch: currentMatchInFile, searchQuery }: DiffViewerProps) {
   const [commentingOn, setCommentingOn] = useState<CommentingOn | null>(null);
   const [dragging, setDragging] = useState<{ anchorLine: number; side: "LEFT" | "RIGHT"; currentLine: number } | null>(null);
+  const diffContentRef = useRef<HTMLDivElement>(null);
 
   function handleLineMouseDown(line: number, side: "LEFT" | "RIGHT") {
     setDragging({ anchorLine: line, side, currentLine: line });
@@ -1266,6 +1270,188 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
   const isCritical =
     file.risk_level === "critical" || file.risk_level === "high";
 
+  // Track original collapsed state so we can restore it when search ends
+  const preSearchCollapsed = useRef<Set<number> | null>(null);
+  const collapsedHunksRef = useRef(collapsedHunks);
+  collapsedHunksRef.current = collapsedHunks;
+
+  // Expand collapsed hunks that contain search matches; restore when search clears
+  useEffect(() => {
+    const hasSearch = searchQuery && searchMatches && searchMatches.length > 0;
+
+    if (!hasSearch) {
+      // Search ended — restore original collapsed state if we saved one
+      if (preSearchCollapsed.current !== null) {
+        setCollapsedHunks(preSearchCollapsed.current);
+        preSearchCollapsed.current = null;
+      }
+      return;
+    }
+
+    // Save original collapsed state before we start expanding
+    if (preSearchCollapsed.current === null) {
+      preSearchCollapsed.current = new Set(collapsedHunksRef.current);
+    }
+
+    // Find which hunk indices contain search match line numbers
+    const matchLineNums = new Set(searchMatches!.map((m) => m.lineNumber));
+    const hunksToExpand = new Set<number>();
+    for (const hunk of hunks) {
+      for (const line of hunk.lines) {
+        const ln = line.newLineNum ?? line.oldLineNum;
+        if (ln != null && matchLineNums.has(ln)) {
+          hunksToExpand.add(hunk.index);
+          break;
+        }
+      }
+    }
+
+    if (hunksToExpand.size === 0) return;
+
+    setCollapsedHunks((prev) => {
+      const next = new Set(prev);
+      for (const idx of hunksToExpand) {
+        next.delete(idx);
+      }
+      if (next.size === prev.size) return prev;
+      return next;
+    });
+  }, [searchQuery, searchMatches, hunks]);
+
+  // Apply word-level search highlights into the DOM (marks all matches)
+  useEffect(() => {
+    const container = diffContentRef.current;
+    if (!container) return;
+
+    function clearMarks() {
+      container!.querySelectorAll("mark.search-highlight, mark.search-highlight-current").forEach((el) => {
+        const parent = el.parentNode;
+        if (parent) {
+          parent.replaceChild(document.createTextNode(el.textContent || ""), el);
+          parent.normalize();
+        }
+      });
+      container!.querySelectorAll(".search-match-line").forEach((el) => {
+        el.classList.remove("search-match-line");
+      });
+    }
+
+    clearMarks();
+
+    if (!searchQuery || !searchMatches || searchMatches.length === 0) return;
+
+    const query = searchQuery.toLowerCase();
+
+    const pres = container.querySelectorAll<HTMLElement>(".line-content pre");
+    for (const pre of pres) {
+      const row = pre.closest("tr");
+      if (!row) continue;
+
+      const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+      const textNodes: Text[] = [];
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        textNodes.push(node as Text);
+      }
+
+      let hasMatch = false;
+      let charOffset = 0;
+
+      // Get the line number for this row (used as data attribute on marks)
+      const lineNumCells = row.querySelectorAll<HTMLElement>(".line-num");
+      let lineNum: number | null = null;
+      for (const cell of lineNumCells) {
+        const text = cell.textContent?.trim();
+        if (text && /^\d+$/.test(text)) {
+          lineNum = parseInt(text, 10);
+          break;
+        }
+      }
+
+      for (const textNode of textNodes) {
+        const text = textNode.textContent || "";
+        const textLower = text.toLowerCase();
+        const parts: (string | { text: string; offset: number })[] = [];
+        let lastEnd = 0;
+        let searchStart = 0;
+
+        while (true) {
+          const idx = textLower.indexOf(query, searchStart);
+          if (idx === -1) break;
+          if (idx > lastEnd) parts.push(text.slice(lastEnd, idx));
+          parts.push({ text: text.slice(idx, idx + query.length), offset: charOffset + idx });
+          lastEnd = idx + query.length;
+          searchStart = idx + 1;
+          hasMatch = true;
+        }
+
+        charOffset += text.length;
+        if (parts.length === 0) continue;
+        if (lastEnd < text.length) parts.push(text.slice(lastEnd));
+
+        const frag = document.createDocumentFragment();
+        for (const part of parts) {
+          if (typeof part === "string") {
+            frag.appendChild(document.createTextNode(part));
+          } else {
+            const mark = document.createElement("mark");
+            mark.className = "search-highlight";
+            mark.dataset.line = String(lineNum ?? "");
+            mark.dataset.offset = String(part.offset);
+            mark.textContent = part.text;
+            frag.appendChild(mark);
+          }
+        }
+        textNode.parentNode!.replaceChild(frag, textNode);
+      }
+
+      if (hasMatch) row.classList.add("search-match-line");
+    }
+
+    return clearMarks;
+  }, [searchMatches, searchQuery, file.path]);
+
+  // Update which mark is the "current" one (lightweight — just swaps classes)
+  useEffect(() => {
+    const container = diffContentRef.current;
+    if (!container) return;
+
+    // Clear previous current mark
+    const prev = container.querySelector("mark.search-highlight-current");
+    if (prev) {
+      prev.className = "search-highlight";
+      prev.closest("tr")?.classList.remove("search-current-line");
+    }
+
+    if (!currentMatchInFile) return;
+
+    // Find the mark matching the current search match by data attributes
+    const marks = container.querySelectorAll<HTMLElement>("mark.search-highlight");
+    for (const mark of marks) {
+      if (
+        mark.dataset.line === String(currentMatchInFile.lineNumber) &&
+        mark.dataset.offset === String(currentMatchInFile.matchStart)
+      ) {
+        mark.className = "search-highlight-current";
+        mark.closest("tr")?.classList.add("search-current-line");
+        mark.scrollIntoView({ block: "center", behavior: "smooth" });
+        return;
+      }
+    }
+
+    // Fallback: scroll to the row by line number
+    const allLineNums = container.querySelectorAll<HTMLElement>(".line-num");
+    for (const el of allLineNums) {
+      if (el.textContent?.trim() === String(currentMatchInFile.lineNumber)) {
+        const row = el.closest("tr");
+        if (row) {
+          row.scrollIntoView({ block: "center", behavior: "smooth" });
+          break;
+        }
+      }
+    }
+  }, [currentMatchInFile]);
+
   const highHunkCount = hunks.filter((h) => h.significance === "high").length;
   const collapsedCount = collapsedHunks.size;
 
@@ -1336,7 +1522,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
           ))}
         </div>
       )}
-      <div className="diff-content">
+      <div className="diff-content" ref={diffContentRef}>
         {useHunkView ? (
           viewMode === "unified" || file.diff_type !== "modified" ? (
             <UnifiedView
