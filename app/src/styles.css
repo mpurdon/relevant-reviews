@@ -1476,6 +1476,32 @@ body {
 .highlight-comment {
   color: var(--text-primary);
   font-size: 12px;
+  flex: 1;
+}
+
+.highlight-post-comment {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.highlight-marker:hover .highlight-post-comment,
+.highlights-summary-item:hover .highlight-post-comment {
+  opacity: 1;
+}
+
+.highlight-post-comment:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
 }
 
 /* Highlighted line background tint */

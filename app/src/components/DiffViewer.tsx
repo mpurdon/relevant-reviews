@@ -553,7 +553,7 @@ const severityIcon: Record<string, string> = {
   info: "i",
 };
 
-function HighlightMarker({ highlight }: { highlight: Highlight }) {
+function HighlightMarker({ highlight, onPostAsComment }: { highlight: Highlight; onPostAsComment?: (h: Highlight) => void }) {
   return (
     <div className={`highlight-marker highlight-${highlight.severity}`}>
       <span className="highlight-icon">
@@ -561,6 +561,15 @@ function HighlightMarker({ highlight }: { highlight: Highlight }) {
       </span>
       <span className="highlight-lines">{formatLineRange(highlight.start_line, highlight.end_line)}</span>
       <span className="highlight-comment">{highlight.comment}</span>
+      {onPostAsComment && (
+        <button
+          className="highlight-post-comment"
+          onClick={(e) => { e.stopPropagation(); onPostAsComment(highlight); }}
+          title="Post this AI note as a review comment"
+        >
+          Post as comment
+        </button>
+      )}
     </div>
   );
 }
@@ -644,6 +653,7 @@ function UnifiedHunkLines({
   onCancelComment,
   reviewThreads,
   onEditComment,
+  onPostHighlightAsComment,
   lang,
 }: {
   lines: DiffLine[];
@@ -657,6 +667,7 @@ function UnifiedHunkLines({
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
   onEditComment?: (commentId: string, body: string) => void;
+  onPostHighlightAsComment?: (h: Highlight) => void;
   lang?: string;
 }) {
   const threadsByLine = useMemo(() => buildThreadsByLine(reviewThreads), [reviewThreads]);
@@ -705,7 +716,7 @@ function UnifiedHunkLines({
             {hlStart && (
               <tr className="highlight-row">
                 <td colSpan={4}>
-                  <HighlightMarker highlight={hlStart} />
+                  <HighlightMarker highlight={hlStart} onPostAsComment={onPostHighlightAsComment} />
                 </td>
               </tr>
             )}
@@ -776,6 +787,7 @@ function UnifiedView({
   onCancelComment,
   reviewThreads,
   onEditComment,
+  onPostHighlightAsComment,
   lang,
 }: {
   hunks: Hunk[];
@@ -792,6 +804,7 @@ function UnifiedView({
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
   onEditComment?: (commentId: string, body: string) => void;
+  onPostHighlightAsComment?: (h: Highlight) => void;
   lang?: string;
 }) {
   return (
@@ -849,13 +862,13 @@ function UnifiedView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} lang={lang} />
+                        <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} lang={lang} />
+                <UnifiedHunkLines lines={hunk.lines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -879,6 +892,7 @@ function SplitHunkLines({
   onCancelComment,
   reviewThreads,
   onEditComment,
+  onPostHighlightAsComment,
   lang,
 }: {
   splitLines: SplitLine[];
@@ -892,6 +906,7 @@ function SplitHunkLines({
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
   onEditComment?: (commentId: string, body: string) => void;
+  onPostHighlightAsComment?: (h: Highlight) => void;
   lang?: string;
 }) {
   const threadsByLine = useMemo(() => buildThreadsByLine(reviewThreads), [reviewThreads]);
@@ -949,7 +964,7 @@ function SplitHunkLines({
             {hlStart && (
               <tr className="highlight-row">
                 <td colSpan={4}>
-                  <HighlightMarker highlight={hlStart} />
+                  <HighlightMarker highlight={hlStart} onPostAsComment={onPostHighlightAsComment} />
                 </td>
               </tr>
             )}
@@ -1022,6 +1037,7 @@ function SplitView({
   onCancelComment,
   reviewThreads,
   onEditComment,
+  onPostHighlightAsComment,
   lang,
 }: {
   hunks: Hunk[];
@@ -1038,6 +1054,7 @@ function SplitView({
   onCancelComment?: () => void;
   reviewThreads?: ReviewThread[];
   onEditComment?: (commentId: string, body: string) => void;
+  onPostHighlightAsComment?: (h: Highlight) => void;
   lang?: string;
 }) {
   return (
@@ -1098,13 +1115,13 @@ function SplitView({
                         <col />
                       </colgroup>
                       <tbody>
-                        <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} lang={lang} />
+                        <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
                       </tbody>
                     </table>
                   </td>
                 </tr>
               ) : (
-                <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} lang={lang} />
+                <SplitHunkLines splitLines={splitLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onLineMouseDown} onLineMouseEnter={onLineMouseEnter} onLineMouseUp={onLineMouseUp} onSubmitComment={onSubmitComment} onCancelComment={onCancelComment} reviewThreads={reviewThreads} onEditComment={onEditComment} onPostHighlightAsComment={onPostHighlightAsComment} lang={lang} />
               )}
             </Fragment>
           );
@@ -1155,6 +1172,20 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
   function handleCancelComment() {
     setCommentingOn(null);
     setDragging(null);
+  }
+
+  function handlePostHighlightAsComment(h: Highlight) {
+    if (!onCreateComment) return;
+    const body = `**[AI ${h.severity.toUpperCase()}]** ${h.comment}`;
+    const isRange = h.start_line !== h.end_line;
+    onCreateComment(
+      file.path,
+      h.end_line,
+      "RIGHT",
+      body,
+      isRange ? h.start_line : undefined,
+      isRange ? "RIGHT" : undefined,
+    );
   }
 
   useEffect(() => {
@@ -1292,6 +1323,15 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
               <span className="highlight-severity-badge">{h.severity.toUpperCase()}</span>
               <span className="highlight-lines">{formatLineRange(h.start_line, h.end_line)}</span>
               <span className="highlight-summary-text">{h.comment}</span>
+              {onCreateComment && (
+                <button
+                  className="highlight-post-comment"
+                  onClick={() => handlePostHighlightAsComment(h)}
+                  title="Post this AI note as a review comment"
+                >
+                  Post as comment
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -1314,6 +1354,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
               onCancelComment={handleCancelComment}
               reviewThreads={fileThreads}
               onEditComment={onEditComment}
+              onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined}
               lang={lang}
             />
           ) : (
@@ -1332,6 +1373,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
               onCancelComment={handleCancelComment}
               reviewThreads={fileThreads}
               onEditComment={onEditComment}
+              onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined}
               lang={lang}
             />
           )
@@ -1344,7 +1386,7 @@ export function DiffViewer({ file, viewMode, showHunkSignificance, showAiNotes, 
               <col />
             </colgroup>
             <tbody>
-              <UnifiedHunkLines lines={diffLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} lang={lang} />
+              <UnifiedHunkLines lines={diffLines} highlights={highlights} commentingOn={commentingOn} dragging={dragging} onLineMouseDown={onCreateComment ? handleLineMouseDown : undefined} onLineMouseEnter={handleLineMouseEnter} onLineMouseUp={handleLineMouseUp} onSubmitComment={handleSubmitComment} onCancelComment={handleCancelComment} reviewThreads={fileThreads} onEditComment={onEditComment} onPostHighlightAsComment={onCreateComment ? handlePostHighlightAsComment : undefined} lang={lang} />
             </tbody>
           </table>
         )}
